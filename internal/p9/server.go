@@ -590,16 +590,31 @@ func (s *Server) handleRootCtl(input string) {
 	}
 }
 
+// createSession parses key=value options and starts a new agent session.
+// Recognised keys: backend, model, agent. Unknown keys are rejected.
+// Example: new backend=ollama model=qwen3:8b agent=myagent
 func (s *Server) createSession(args []string) error {
 	home, _ := os.UserHomeDir()
 
 	backendOverride := ""
+	modelOverride := ""
 	agentName := "default"
-	if len(args) > 0 {
-		backendOverride = args[0]
-	}
-	if len(args) > 1 {
-		agentName = args[1]
+
+	for _, arg := range args {
+		k, v, ok := strings.Cut(arg, "=")
+		if !ok || v == "" {
+			return fmt.Errorf("invalid option %q (expected key=value)", arg)
+		}
+		switch k {
+		case "backend":
+			backendOverride = v
+		case "model":
+			modelOverride = v
+		case "agent":
+			agentName = v
+		default:
+			return fmt.Errorf("unknown option %q (valid: backend, model, agent)", k)
+		}
 	}
 
 	var (
@@ -616,6 +631,10 @@ func (s *Server) createSession(args []string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("backend: %w", err)
+	}
+
+	if modelOverride != "" {
+		be.SetModel(modelOverride)
 	}
 
 	if err := os.MkdirAll(s.sessionsDir, 0700); err != nil {
@@ -664,8 +683,8 @@ func (s *Server) createSession(args []string) error {
 	s.sessions[sessID] = sess
 	s.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "olliesrv: new session %s (backend=%s agent=%s)\n",
-		sessID, sess.backendName, agentName)
+	fmt.Fprintf(os.Stderr, "olliesrv: new session %s (backend=%s model=%s agent=%s)\n",
+		sessID, sess.backendName, sess.modelName, agentName)
 	return nil
 }
 

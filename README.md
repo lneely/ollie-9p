@@ -6,7 +6,7 @@ A 9P server that exposes [ollie](../ollie) agent sessions as a virtual filesyste
 
 ```
 ollie/
-  ctl                   write: "new [backend] [agent]" | "kill <session-id>"
+  ctl                   write: "new [backend=x] [model=x] [agent=x]" | "kill <session-id>"
   <session-id>/
     prompt              write: submit a prompt to the agent
     chat                read:  cumulative conversation history
@@ -41,10 +41,14 @@ The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`)
 ### Create a session
 
 ```sh
-echo new > ~/mnt/ollie/ctl                    # default backend and agent
-echo "new ollama" > ~/mnt/ollie/ctl           # specific backend
-echo "new ollama myagent" > ~/mnt/ollie/ctl   # specific backend and agent
+echo new > ~/mnt/ollie/ctl                                        # all defaults
+echo "new backend=ollama" > ~/mnt/ollie/ctl                       # specific backend
+echo "new backend=ollama model=qwen3:8b" > ~/mnt/ollie/ctl        # backend + model
+echo "new backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
 ```
+
+All options are optional and can be specified in any order. Unrecognised keys are rejected.
+Valid keys: `backend`, `model`, `agent`.
 
 A new session directory appears under the mount point named by timestamp + random suffix (e.g. `20260410-014002-ba70fc`).
 
