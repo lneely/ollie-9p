@@ -56,7 +56,8 @@ type session struct {
 	chatLog  []byte
 	chatVers uint32 // incremented on each append; used as Qid.Vers
 	// state is the current agent state: "idle", "thinking", "calling: <tool>"
-	state string
+	state     string
+	modelName string
 }
 
 func (sess *session) setState(s string) {
@@ -203,7 +204,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[1] {
-		case "ctl", "prompt", "chat", "backend", "agent", "state":
+		case "ctl", "prompt", "chat", "backend", "agent", "model", "state":
 			return "file"
 		}
 	}
@@ -397,6 +398,8 @@ func (s *Server) readFile(path string) string {
 		return sess.backendName + "\n"
 	case "agent":
 		return sess.agentName + "\n"
+	case "model":
+		return sess.modelName + "\n"
 	case "state":
 		return sess.state + "\n"
 	}
@@ -545,6 +548,24 @@ func (s *Server) handleWrite(path, input string) {
 			}
 			publish(ev)
 		})
+
+	case "model":
+		if input == "" {
+			fmt.Fprintf(os.Stderr, "olliesrv: model: empty model name\n")
+			return
+		}
+		sess.mu.Lock()
+		old := sess.modelName
+		sess.modelName = input
+		sess.mu.Unlock()
+		sess.core.Submit(sess.ctx, "/model "+input, func(ev agent.Event) {
+			if ev.Role == "error" {
+				sess.mu.Lock()
+				sess.modelName = old
+				sess.mu.Unlock()
+			}
+			publish(ev)
+		})
 	}
 }
 
@@ -633,6 +654,7 @@ func (s *Server) createSession(args []string) error {
 		core:        core,
 		backendName: be.Name(),
 		agentName:   agentName,
+		modelName:   be.Model(),
 		ctx:         ctx,
 		cancel:      cancel,
 		state:       "idle",
@@ -748,6 +770,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"state", 0444},
 			{"backend", 0666},
 			{"agent", 0666},
+			{"model", 0666},
 		}
 		for _, e := range files {
 			dirs = append(dirs, makeDir(e.name, sessPath+"/"+e.name, false, e.mode))
@@ -808,7 +831,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0200
 		case "chat", "state":
 			mode = 0444
-		case "backend", "agent":
+		case "backend", "agent", "model":
 			mode = 0666
 		default:
 			mode = 0444
