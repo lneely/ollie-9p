@@ -124,7 +124,7 @@ echo "kill <session-id>" > ~/mnt/ollie/ctl
 
 **Agent chaining** — one agent's `chat` output piped into another session's `prompt`. Model composition at the shell level.
 
-**Hooks and watchers** — `inotifywait` on the session directory to trigger actions when state changes or chat grows. Build lightweight event-driven pipelines without polling loops.
+**Hooks and watchers** — poll `state` or compare `chat` size in a loop to trigger actions when the agent finishes or output grows. Build lightweight event-driven pipelines with standard shell tools.
 
 ## Example shell session
 
