@@ -108,6 +108,24 @@ echo myagent > ~/mnt/ollie/<session-id>/agent
 echo "kill <session-id>" > ~/mnt/ollie/ctl
 ```
 
+## Possible Applications
+
+**Scripting and automation** — shell scripts that submit prompts, poll `state` until idle, then read `chat` for the result. No SDK, no HTTP client, just file I/O. Works in any language that can write to a file.
+
+**Multiplexing sessions** — run several agents in parallel, each in their own session directory, and fan work out to them from a shell script. Coordinate by watching their `state` files.
+
+**Integration with existing Unix tools** — pipe `chat` into `grep`, `awk`, `sed`. Diff two sessions' outputs. Log conversations with `cp`. Search history across sessions with `grep -r`.
+
+**Editor integration** — any editor that can read/write files gets agent access for free. In `acme` or `sam`, you write to `prompt` and read back `chat` with no plugin required. Fits naturally into the Plan 9 workflow.
+
+**Lightweight TUI alternatives** — `watch cat state` as a status bar, `tail -f chat` in one pane, prompt submission in another. Compose a working interface entirely from standard tools.
+
+**Remote access** — 9P is a network protocol. Export the namespace over the network and access agent sessions from another machine using the same file interface, with no additional daemon or API layer.
+
+**Agent chaining** — one agent's `chat` output piped into another session's `prompt`. Model composition at the shell level.
+
+**Hooks and watchers** — `inotifywait` on the session directory to trigger actions when state changes or chat grows. Build lightweight event-driven pipelines without polling loops.
+
 ## Example shell session
 
 ```sh
