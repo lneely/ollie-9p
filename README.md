@@ -14,6 +14,7 @@ ollie/
     ctl                 write: stop | interrupt | /<slash-command>
     backend             r/w:   active backend name
     agent               r/w:   active agent name
+    model               r/w:   active model name
 ```
 
 ## Building
@@ -89,10 +90,11 @@ echo /model qwen3:8b > ~/mnt/ollie/<session-id>/ctl
 
 `ctl` accepts `stop`/`interrupt` or any `/slash-command` supported by the agent. Arbitrary text is rejected.
 
-### Switch backend or agent
+### Switch backend, model, or agent
 
 ```sh
 echo ollama > ~/mnt/ollie/<session-id>/backend
+echo qwen3:8b > ~/mnt/ollie/<session-id>/model
 echo myagent > ~/mnt/ollie/<session-id>/agent
 ```
 
