@@ -310,15 +310,15 @@ Since agents have access to `execute_code`, a session can write and execute a wo
 $ echo new > ~/mnt/ollie/ctl
 $ ls ~/mnt/ollie/s/
 1744276689123456789-2b986c
-$ sid=1744276689123456789-2b986c
-$ tail -f ~/mnt/ollie/s/$sid/chat &
-$ echo "list the go files in /home/lkn/src/ollie" > ~/mnt/ollie/s/$sid/prompt
+$ cd ~/mnt/ollie/s/1744276689123456789-2b986c
+$ tail -f chat &
+$ echo "list the go files in /home/lkn/src/ollie" > prompt
 user: list the go files in /home/lkn/src/ollie
 assistant: -> execute_code({"code":"find /home/lkn/src/ollie -name '*.go'","language":"bash"})
 = pkg/agent/core.go
 pkg/agent/loop.go
 ...
 assistant: The Go source files are: core.go, loop.go, ...
-$ cat ~/mnt/ollie/s/$sid/state
+$ cat state
 idle
 ```
