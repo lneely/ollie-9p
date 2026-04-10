@@ -8,8 +8,9 @@ A 9P server that exposes [ollie](../ollie) agent sessions as a virtual filesyste
 ollie/
   ctl                   write: "new [backend=x] [model=x] [agent=x]" | "kill <session-id>"
   <session-id>/
-    prompt              write: submit a prompt to the agent
+    prompt              write: submit a prompt to the agent (clears reply)
     chat                read:  cumulative conversation history
+    reply               read:  assistant text from the most recent turn only
     state               read:  current agent state (idle, thinking, calling: <tool>)
     ctl                 write: stop | interrupt | /<slash-command>
     backend             r/w:   active backend name
@@ -122,7 +123,7 @@ echo "kill <session-id>" > ~/mnt/ollie/ctl
 
 **Remote access** — 9P is a network protocol. Export the namespace over the network and access agent sessions from another machine using the same file interface, with no additional daemon or API layer.
 
-**Agent chaining** — one agent's `chat` output piped into another session's `prompt`. Model composition at the shell level.
+**Agent chaining** — pipe one agent's `reply` into another session's `prompt`. Poll until `reply` is non-empty (stat size > 0), consume it, submit to the next agent. Writing to `prompt` clears `reply` as a side-effect, so the handoff is clean.
 
 **Hooks and watchers** — poll `state` in a loop to trigger actions when the agent finishes, or use `tail -f chat` to react to new output. Build lightweight event-driven pipelines with standard shell tools.
 

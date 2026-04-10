@@ -58,6 +58,10 @@ type session struct {
 	// state is the current agent state: "idle", "thinking", "calling: <tool>"
 	state     string
 	modelName string
+	// reply holds only the assistant text from the most recently completed
+	// turn. Cleared when a new prompt is submitted. Read-only; 0444.
+	reply     []byte
+	replyVers uint32
 }
 
 func (sess *session) setState(s string) {
@@ -204,7 +208,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[1] {
-		case "ctl", "prompt", "chat", "backend", "agent", "model", "state":
+		case "ctl", "prompt", "chat", "reply", "backend", "agent", "model", "state":
 			return "file"
 		}
 	}
@@ -327,9 +331,12 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
-	// chat is served directly from the session's append-only log.
-	if pathBase(path) == "chat" {
+	// chat and reply are served directly from session buffers by offset.
+	switch pathBase(path) {
+	case "chat":
 		return s.readChat(fc, path)
+	case "reply":
+		return s.readReply(fc, path)
 	}
 
 	content := s.readFile(path)
@@ -372,6 +379,35 @@ func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
 			end = len(log)
 		}
 		data = log[off:end]
+	}
+	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+}
+
+// readReply serves bytes from the session's reply buffer at the requested offset.
+func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
+	if len(parts) != 2 {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+	s.mu.RLock()
+	sess := s.sessions[parts[0]]
+	s.mu.RUnlock()
+	if sess == nil {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+
+	sess.mu.RLock()
+	buf := sess.reply
+	sess.mu.RUnlock()
+
+	var data []byte
+	off := int(fc.Offset)
+	if off < len(buf) {
+		end := off + int(fc.Count)
+		if end > len(buf) {
+			end = len(buf)
+		}
+		data = buf[off:end]
 	}
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 }
@@ -507,8 +543,24 @@ func (s *Server) handleWrite(path, input string) {
 	switch fileName {
 	case "prompt":
 		sess.appendChat([]byte("user: " + input + "\n"))
+		// Clear reply before submission — documented side-effect.
+		sess.mu.Lock()
+		sess.reply = nil
+		sess.replyVers++
+		sess.mu.Unlock()
 		sess.setState("thinking")
-		sess.core.Submit(sess.ctx, input, publish)
+		var replyBuf []byte
+		sess.core.Submit(sess.ctx, input, func(ev agent.Event) {
+			if ev.Role == "assistant" {
+				replyBuf = append(replyBuf, []byte(ev.Content)...)
+			}
+			publish(ev)
+		})
+		// Atomically publish reply on turn completion.
+		sess.mu.Lock()
+		sess.reply = replyBuf
+		sess.replyVers++
+		sess.mu.Unlock()
 		sess.setState("idle")
 
 	case "ctl":
@@ -786,6 +838,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"ctl", 0200},
 			{"prompt", 0200},
 			{"chat", 0444},
+			{"reply", 0444},
 			{"state", 0444},
 			{"backend", 0666},
 			{"agent", 0666},
@@ -848,7 +901,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt":
 			mode = 0200
-		case "chat", "state":
+		case "chat", "reply", "state":
 			mode = 0444
 		case "backend", "agent", "model":
 			mode = 0666
@@ -868,7 +921,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 
 	// For chat files, report the actual log size and Qid version so that
 	// polling tools (tail -f) can detect growth via stat.
-	if base == "chat" {
+	if base == "chat" || base == "reply" {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
 		if len(parts) == 2 {
 			s.mu.RLock()
@@ -876,8 +929,13 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			s.mu.RUnlock()
 			if sess != nil {
 				sess.mu.RLock()
-				dir.Length = uint64(len(sess.chatLog))
-				dir.Qid.Vers = sess.chatVers
+				if base == "chat" {
+					dir.Length = uint64(len(sess.chatLog))
+					dir.Qid.Vers = sess.chatVers
+				} else {
+					dir.Length = uint64(len(sess.reply))
+					dir.Qid.Vers = sess.replyVers
+				}
 				sess.mu.RUnlock()
 			}
 		}
