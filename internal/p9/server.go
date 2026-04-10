@@ -103,6 +103,7 @@ type Server struct {
 	sessions    map[string]*session
 	agentsDir   string
 	sessionsDir string
+	promptsDir  string
 }
 
 // New creates a new Server.
@@ -111,6 +112,7 @@ func New() *Server {
 		sessions:    make(map[string]*session),
 		agentsDir:   agent.DefaultAgentsDir(),
 		sessionsDir: agent.DefaultSessionsDir(),
+		promptsDir:  agent.DefaultPromptsDir(),
 	}
 }
 
@@ -195,6 +197,12 @@ func (s *Server) pathType(path string) string {
 		return "file"
 	case len(parts) == 1 && parts[0] == "s":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "prompts":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "prompts":
+		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
+			return "file"
+		}
 	case len(parts) == 2 && parts[0] == "s":
 		s.mu.RLock()
 		_, ok := s.sessions[parts[1]]
@@ -339,6 +347,24 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return s.readChat(fc, path)
 	case "reply":
 		return s.readReply(fc, path)
+	}
+
+	// Prompt files are served from disk.
+	if strings.HasPrefix(path, "/prompts/") {
+		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		var data []byte
+		off := int(fc.Offset)
+		if off < len(content) {
+			end := off + int(fc.Count)
+			if end > len(content) {
+				end = len(content)
+			}
+			data = content[off:end]
+		}
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
 	content := s.readFile(path)
@@ -505,6 +531,14 @@ func (s *Server) handleWrite(path, input string) {
 
 	if path == "/ctl" {
 		s.handleRootCtl(input)
+		return
+	}
+
+	// Prompt file writes go directly to disk.
+	if strings.HasPrefix(path, "/prompts/") {
+		if err := os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: write prompt: %v\n", err)
+		}
 		return
 	}
 
@@ -813,7 +847,15 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 
 	if path == "/" {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
+		dirs = append(dirs, makeDir("prompts", "/prompts", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
+	} else if path == "/prompts" {
+		entries, _ := os.ReadDir(s.promptsDir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				dirs = append(dirs, makeDir(e.Name(), "/prompts/"+e.Name(), false, 0666))
+			}
+		}
 	} else if path == "/s" {
 		s.mu.RLock()
 		for id := range s.sessions {
@@ -900,7 +942,11 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
 		default:
-			mode = 0444
+			if strings.HasPrefix(path, "/prompts/") {
+				mode = 0666
+			} else {
+				mode = 0444
+			}
 		}
 	}
 
