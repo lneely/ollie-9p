@@ -202,6 +202,8 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "sk":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "t":
+		return "dir"
 	case len(parts) == 2 && parts[0] == "prompts":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
 			return "file"
@@ -209,6 +211,10 @@ func (s *Server) pathType(path string) string {
 	case len(parts) == 2 && parts[0] == "sk":
 		name := strings.TrimSuffix(parts[1], ".md")
 		if _, err := skills.Read(name); err == nil {
+			return "file"
+		}
+	case len(parts) == 2 && parts[0] == "t":
+		if _, err := os.Stat(execute.ToolsPath() + "/" + parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "s":
@@ -379,6 +385,24 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if strings.HasPrefix(path, "/sk/") {
 		name := strings.TrimSuffix(pathBase(path), ".md")
 		content, err := skills.Read(name)
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		var data []byte
+		off := int(fc.Offset)
+		if off < len(content) {
+			end := off + int(fc.Count)
+			if end > len(content) {
+				end = len(content)
+			}
+			data = content[off:end]
+		}
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+	}
+
+	// Tool files are served from the tools path.
+	if strings.HasPrefix(path, "/t/") {
+		content, err := os.ReadFile(execute.ToolsPath() + "/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -565,6 +589,14 @@ func (s *Server) handleWrite(path, input string) {
 	if strings.HasPrefix(path, "/prompts/") {
 		if err := os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "olliesrv: write prompt: %v\n", err)
+		}
+		return
+	}
+
+	// Tool file writes go directly to disk.
+	if strings.HasPrefix(path, "/t/") {
+		if err := os.WriteFile(execute.ToolsPath()+"/"+pathBase(path), []byte(input), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: write tool: %v\n", err)
 		}
 		return
 	}
@@ -877,6 +909,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("prompts", "/prompts", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0555))
 	} else if path == "/prompts" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
@@ -888,6 +921,13 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		for _, m := range skills.List() {
 			name := m.Name + ".md"
 			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0444))
+		}
+	} else if path == "/t" {
+		entries, _ := os.ReadDir(execute.ToolsPath())
+		for _, e := range entries {
+			if !e.IsDir() {
+				dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, 0666))
+			}
 		}
 	} else if path == "/s" {
 		s.mu.RLock()
@@ -979,6 +1019,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0444
+			} else if strings.HasPrefix(path, "/t/") {
+				mode = 0666
 			} else {
 				mode = 0444
 			}
