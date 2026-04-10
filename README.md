@@ -137,11 +137,11 @@ echo "kill <session-id>" > ~/mnt/ollie/ctl
 
 Each session exposes a `reply` file containing only the assistant text from the most recently completed turn. Writing to `prompt` clears `reply` as a side-effect. Together these make agent-to-agent handoffs expressible as plain file operations — no message queue, no orchestration framework, no shared memory.
 
-A shell script is the orchestrator. The agents communicate only through what the script explicitly passes between them, so information flow is fully under your control. Each agent can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`.
+A shell script moves text between sessions. The agents communicate only through what the script explicitly passes between them, so information flow is fully under your control. Each agent can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`.
 
 #### Example: develop → review → test
 
-Three sessions with specialized agent configs run a feedback loop. The reviewer ends its response with `LGTM` (proceed) or `PTAL` (revise). The tester ends with `Approved` (done) or `Rejected` (revise). The orchestrator parses the verdict with `grep` and routes accordingly.
+Three sessions with specialized agent configs run a feedback loop. The reviewer ends its response with `LGTM` (proceed) or `PTAL` (revise). The tester ends with `Approved` (done) or `Rejected` (revise). A shell script reads the verdict with `grep` and routes accordingly.
 
 ```sh
 #!/bin/sh
@@ -194,7 +194,7 @@ while true; do
 done
 ```
 
-Each agent only sees what the orchestrator explicitly sends it. Each can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`. The boundary between fully automated and human-in-the-loop is just whether the script pauses to ask.
+Each agent only sees what the script explicitly sends it. Each can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`. The boundary between fully automated and human-in-the-loop is just whether the script pauses to ask.
 
 ## Example shell session
 
