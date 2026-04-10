@@ -200,6 +200,10 @@ Each agent only sees what the script explicitly sends it. Each can use a differe
 
 Since agents have access to `execute_code`, a session can write and execute a workflow script without any human involvement. Given a task and knowledge of the filesystem layout, an agent can decompose the work, spawn sessions, write the coordination script, and run it — all in a single turn. The README you are reading is essentially its system prompt. Conductor functionality, for free.
 
+### Persistent Memory
+
+**Task tracking** — Agent sessions are ephemeral by nature: context windows fill, processes crash, work gets lost. [9beads](https://github.com/lneely/9beads) addresses this by exposing a structured, version-controlled task database as a 9P filesystem. Any session can read the task list, claim work, track dependencies, and mark completion through ordinary file operations. If a session is interrupted, another can pick up exactly where it left off. Task lists are scoped per-project, keeping them focused and bounded. Combined with olliesrv, agents get both a communication surface and a memory layer, with no special integration required between them.
+
 ## Example shell session
 
 ```sh
