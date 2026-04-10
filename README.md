@@ -9,16 +9,19 @@ The goal is integration, not self-sufficiency. Rather than providing orchestrati
 ```
 ollie/
   ctl                   write: "new [backend=x] [model=x] [agent=x]" | "kill <session-id>"
-  <session-id>/
-    prompt              write: submit a prompt to the agent (clears reply)
-    chat                read:  cumulative conversation history
-    reply               read:  assistant text from the most recent turn only
-    state               read:  current agent state (idle, thinking, calling: <tool>)
-    ctl                 write: stop | interrupt | /<slash-command>
-    backend             r/w:   active backend name
-    agent               r/w:   active agent name
-    model               r/w:   active model name
+  s/                    dir:   one entry per active session, sorted by creation time
+    <session-id>/
+      prompt            write: submit a prompt to the agent (clears reply)
+      chat              read:  cumulative conversation history
+      reply             read:  assistant text from the most recent turn only
+      state             read:  current agent state (idle, thinking, calling: <tool>)
+      ctl               write: stop | interrupt | /<slash-command>
+      backend           r/w:   active backend name
+      agent             r/w:   active agent name
+      model             r/w:   active model name
 ```
+
+Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
 
 ## Building
 
@@ -53,12 +56,12 @@ echo "new backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
 All options are optional and can be specified in any order. Unrecognised keys are rejected.
 Valid keys: `backend`, `model`, `agent`.
 
-A new session directory appears under the mount point named by timestamp + random suffix (e.g. `20260410-014002-ba70fc`).
+A new session directory appears under `s/`, named by Unix nanosecond timestamp + random suffix (e.g. `1744276689123456789-2b986c`).
 
 ### Send a prompt
 
 ```sh
-echo "what files are in the current directory?" > ~/mnt/ollie/<session-id>/prompt
+echo "what files are in the current directory?" > ~/mnt/ollie/s/<session-id>/prompt
 ```
 
 Writes dispatch asynchronously on close, so the shell returns immediately. The agent runs in the background.
@@ -66,8 +69,8 @@ Writes dispatch asynchronously on close, so the shell returns immediately. The a
 ### Read the conversation
 
 ```sh
-cat ~/mnt/ollie/<session-id>/chat             # full history snapshot
-tail -f ~/mnt/ollie/<session-id>/chat         # follow output as it arrives
+cat ~/mnt/ollie/s/<session-id>/chat             # full history snapshot
+tail -f ~/mnt/ollie/s/<session-id>/chat         # follow output as it arrives
 ```
 
 The `chat` file is an append-only log of the full conversation. Format:
@@ -82,17 +85,17 @@ assistant: <response>
 ### Check agent state
 
 ```sh
-cat ~/mnt/ollie/<session-id>/state
+cat ~/mnt/ollie/s/<session-id>/state
 # idle | thinking | calling: <toolname>
 ```
 
 ### Control a session
 
 ```sh
-echo stop > ~/mnt/ollie/<session-id>/ctl          # interrupt the current turn
-echo /compact > ~/mnt/ollie/<session-id>/ctl      # summarize context
-echo /clear > ~/mnt/ollie/<session-id>/ctl        # clear session history
-echo /model qwen3:8b > ~/mnt/ollie/<session-id>/ctl
+echo stop > ~/mnt/ollie/s/<session-id>/ctl          # interrupt the current turn
+echo /compact > ~/mnt/ollie/s/<session-id>/ctl      # summarize context
+echo /clear > ~/mnt/ollie/s/<session-id>/ctl        # clear session history
+echo /model qwen3:8b > ~/mnt/ollie/s/<session-id>/ctl
 ```
 
 `ctl` accepts `stop`/`interrupt` or any `/slash-command` supported by the agent. Arbitrary text is rejected.
@@ -100,9 +103,9 @@ echo /model qwen3:8b > ~/mnt/ollie/<session-id>/ctl
 ### Switch backend, model, or agent
 
 ```sh
-echo ollama > ~/mnt/ollie/<session-id>/backend
-echo qwen3:8b > ~/mnt/ollie/<session-id>/model
-echo myagent > ~/mnt/ollie/<session-id>/agent
+echo ollama > ~/mnt/ollie/s/<session-id>/backend
+echo qwen3:8b > ~/mnt/ollie/s/<session-id>/model
+echo myagent > ~/mnt/ollie/s/<session-id>/agent
 ```
 
 ### Kill a session
@@ -147,41 +150,44 @@ Three sessions with specialized agent configs run a feedback loop. The reviewer 
 #!/bin/sh
 cd ~/mnt/ollie
 
+# Count existing sessions so we can identify the newly created ones by offset.
+n=$(ls s/ | wc -l)
+
 echo "new agent=developer" > ctl
 echo "new agent=reviewer"  > ctl
 echo "new agent=tester"    > ctl
 
-dev=$(ls -d [0-9]* | sed -n '1p')
-rev=$(ls -d [0-9]* | sed -n '2p')
-tst=$(ls -d [0-9]* | sed -n '3p')
+dev=$(ls s/ | sort | sed -n "$((n+1))p")
+rev=$(ls s/ | sort | sed -n "$((n+2))p")
+tst=$(ls s/ | sort | sed -n "$((n+3))p")
 
 wait_reply() {
-    while [ "$(wc -c < $1/reply)" -eq 0 ]; do sleep 1; done
+    while [ "$(wc -c < s/$1/reply)" -eq 0 ]; do sleep 1; done
 }
 
-echo "implement a function that parses a JSON config file" > $dev/prompt
+echo "implement a function that parses a JSON config file" > s/$dev/prompt
 
 while true; do
     wait_reply $dev
-    code=$(cat $dev/reply)
+    code=$(cat s/$dev/reply)
 
     # review phase
-    printf "Review the following code. End your response with LGTM if it is ready, or PTAL if it needs revision.\n\n%s" "$code" > $rev/prompt
+    printf "Review the following code. End your response with LGTM if it is ready, or PTAL if it needs revision.\n\n%s" "$code" > s/$rev/prompt
     wait_reply $rev
 
-    if ! grep -qi "LGTM" $rev/reply; then
+    if ! grep -qi "LGTM" s/$rev/reply; then
         { echo "revise this code based on the feedback below."
           echo "--- code ---";     echo "$code"
-          echo "--- feedback ---"; cat $rev/reply
-        } > $dev/prompt
+          echo "--- feedback ---"; cat s/$rev/reply
+        } > s/$dev/prompt
         continue
     fi
 
     # test phase
-    printf "Test the following code. End your response with Approved if all tests pass, or Rejected if they do not.\n\n%s" "$code" > $tst/prompt
+    printf "Test the following code. End your response with Approved if all tests pass, or Rejected if they do not.\n\n%s" "$code" > s/$tst/prompt
     wait_reply $tst
 
-    if grep -qi "Approved" $tst/reply; then
+    if grep -qi "Approved" s/$tst/reply; then
         echo "done."
         echo "$code"
         break
@@ -189,8 +195,8 @@ while true; do
 
     { echo "fix the failures reported below."
       echo "--- code ---";        echo "$code"
-      echo "--- test report ---"; cat $tst/reply
-    } > $dev/prompt
+      echo "--- test report ---"; cat s/$tst/reply
+    } > s/$dev/prompt
 done
 ```
 
@@ -224,7 +230,7 @@ _spawn_lock  = threading.Lock()
 
 
 def session_ids():
-    return {e.name for e in BASE.iterdir() if e.is_dir()}
+    return {e.name for e in (BASE / "s").iterdir() if e.is_dir()}
 
 def spawn_session(agent="default"):
     with _spawn_lock:
@@ -240,7 +246,7 @@ def kill_session(sid):
     (BASE / "ctl").write_text(f"kill {sid}\n")
 
 def wait_reply(sid):
-    path = BASE / sid / "reply"
+    path = BASE / "s" / sid / "reply"
     while True:
         if path.stat().st_size > 0:
             return path.read_text().strip()
@@ -253,7 +259,7 @@ def run_subagent(spec):
     sid     = spawn_session(agent)
     try:
         prompt = f"{context}\n\n{task}".strip() if context else task
-        (BASE / sid / "prompt").write_text(prompt)
+        (BASE / "s" / sid / "prompt").write_text(prompt)
         return {"agent": agent, "reply": wait_reply(sid)}
     finally:
         kill_session(sid)
@@ -302,17 +308,17 @@ Since agents have access to `execute_code`, a session can write and execute a wo
 
 ```sh
 $ echo new > ~/mnt/ollie/ctl
-$ ls ~/mnt/ollie/
-20260410-014002-ba70fc  ctl
-$ sid=20260410-014002-ba70fc
-$ tail -f ~/mnt/ollie/$sid/chat &
-$ echo "list the go files in /home/lkn/src/ollie" > ~/mnt/ollie/$sid/prompt
+$ ls ~/mnt/ollie/s/
+1744276689123456789-2b986c
+$ sid=1744276689123456789-2b986c
+$ tail -f ~/mnt/ollie/s/$sid/chat &
+$ echo "list the go files in /home/lkn/src/ollie" > ~/mnt/ollie/s/$sid/prompt
 user: list the go files in /home/lkn/src/ollie
 assistant: -> execute_code({"code":"find /home/lkn/src/ollie -name '*.go'","language":"bash"})
 = pkg/agent/core.go
 pkg/agent/loop.go
 ...
 assistant: The Go source files are: core.go, loop.go, ...
-$ cat ~/mnt/ollie/$sid/state
+$ cat ~/mnt/ollie/s/$sid/state
 idle
 ```

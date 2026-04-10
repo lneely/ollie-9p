@@ -6,14 +6,17 @@
 //	    ctl                 (write) create/destroy sessions
 //	                                "new [backend] [agent]" creates a session
 //	                                "kill <session-id>" destroys a session
-//	    {session-id}/
-//	        ctl             (write) session control: compact, clear, interrupt
-//	        prompt          (write) submit a prompt to the agent
-//	        chat            (read)  cumulative chat history; grows as conversation
+//	    s/                  (dir)   session directory; one entry per active session,
+//	                                sorted lexicographically by session ID (= creation
+//	                                order, since IDs are unix-nanosecond timestamps).
+//	        {session-id}/
+//	            ctl         (write) session control: compact, clear, interrupt
+//	            prompt      (write) submit a prompt to the agent
+//	            chat        (read)  cumulative chat history; grows as conversation
 //	                                progresses — use cat for a snapshot, tail -f
 //	                                to follow new output.
-//	        backend         (r/w)   read/write the active backend name
-//	        agent           (r/w)   read/write the active agent name
+//	            backend     (r/w)   read/write the active backend name
+//	            agent       (r/w)   read/write the active agent name
 package p9
 
 import (
@@ -185,26 +188,27 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	}
 	trimmed := strings.TrimPrefix(path, "/")
-	parts := strings.SplitN(trimmed, "/", 2)
-	switch len(parts) {
-	case 1:
-		if parts[0] == "ctl" {
-			return "file"
-		}
+	parts := strings.SplitN(trimmed, "/", 3)
+	switch {
+	case len(parts) == 1 && parts[0] == "ctl":
+		return "file"
+	case len(parts) == 1 && parts[0] == "s":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "s":
 		s.mu.RLock()
-		_, ok := s.sessions[parts[0]]
+		_, ok := s.sessions[parts[1]]
 		s.mu.RUnlock()
 		if ok {
 			return "dir"
 		}
-	case 2:
+	case len(parts) == 3 && parts[0] == "s":
 		s.mu.RLock()
-		_, ok := s.sessions[parts[0]]
+		_, ok := s.sessions[parts[1]]
 		s.mu.RUnlock()
 		if !ok {
 			return ""
 		}
-		switch parts[1] {
+		switch parts[2] {
 		case "ctl", "prompt", "chat", "reply", "backend", "agent", "model", "state":
 			return "file"
 		}
@@ -353,12 +357,12 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 // Returns 0 bytes when offset is at or past the current end (normal EOF);
 // tail -f detects growth via stat and re-reads from its last position.
 func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) != 3 || parts[0] != "s" {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 	}
 	s.mu.RLock()
-	sess := s.sessions[parts[0]]
+	sess := s.sessions[parts[1]]
 	s.mu.RUnlock()
 	if sess == nil {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
@@ -382,12 +386,12 @@ func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
 
 // readReply serves bytes from the session's reply buffer at the requested offset.
 func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) != 3 || parts[0] != "s" {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 	}
 	s.mu.RLock()
-	sess := s.sessions[parts[0]]
+	sess := s.sessions[parts[1]]
 	s.mu.RUnlock()
 	if sess == nil {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
@@ -411,11 +415,11 @@ func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
 
 // readFile returns the text content for a readable session file.
 func (s *Server) readFile(path string) string {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) != 3 || parts[0] != "s" {
 		return ""
 	}
-	sessID, fileName := parts[0], parts[1]
+	sessID, fileName := parts[1], parts[2]
 
 	s.mu.RLock()
 	sess := s.sessions[sessID]
@@ -501,11 +505,12 @@ func (s *Server) handleWrite(path, input string) {
 		return
 	}
 
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-	if len(parts) != 2 {
+	// Path format: /s/{sessid}/{file}
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) != 3 || parts[0] != "s" {
 		return
 	}
-	sessID, fileName := parts[0], parts[1]
+	sessID, fileName := parts[1], parts[2]
 
 	s.mu.RLock()
 	sess := s.sessions[sessID]
@@ -795,13 +800,15 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 
 	if path == "/" {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
+		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
+	} else if path == "/s" {
 		s.mu.RLock()
 		for id := range s.sessions {
-			dirs = append(dirs, makeDir(id, "/"+id, true, plan9.DMDIR|0555))
+			dirs = append(dirs, makeDir(id, "/s/"+id, true, plan9.DMDIR|0555))
 		}
 		s.mu.RUnlock()
 	} else {
-		// Session directory.
+		// Session directory: path is /s/{sessid}
 		sessPath := path
 		type entry struct {
 			name string
@@ -892,13 +899,14 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		Muid: "ollie",
 	}
 
-	// For chat files, report the actual log size and Qid version so that
+	// For chat/reply files, report actual size and Qid version so that
 	// polling tools (tail -f) can detect growth via stat.
+	// Path format: /s/{sessid}/{file}
 	if base == "chat" || base == "reply" {
-		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-		if len(parts) == 2 {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+		if len(parts) == 3 && parts[0] == "s" {
 			s.mu.RLock()
-			sess := s.sessions[parts[0]]
+			sess := s.sessions[parts[1]]
 			s.mu.RUnlock()
 			if sess != nil {
 				sess.mu.RLock()
