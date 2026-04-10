@@ -11,5 +11,5 @@ OLLIE="${OLLIE_9MOUNT:-$HOME/mnt/ollie}"
 
 for arg in "$@"; do
   name="${arg##*/}"
-  cat "$OLLIE/skills/${name}.md"
+  cat "$OLLIE/sk/${name}.md"
 done

@@ -11,7 +11,7 @@ OLLIE="${OLLIE_9MOUNT:-$HOME/mnt/ollie}"
 keyword="$1"
 results=""
 
-for file in "$OLLIE/skills"/*.md; do
+for file in "$OLLIE/sk"/*.md; do
   [ -f "$file" ] || continue
   name=$(basename "$file" .md)
   if grep -qi "$keyword" "$file"; then

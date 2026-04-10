@@ -200,13 +200,13 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "prompts":
 		return "dir"
-	case len(parts) == 1 && parts[0] == "skills":
+	case len(parts) == 1 && parts[0] == "sk":
 		return "dir"
 	case len(parts) == 2 && parts[0] == "prompts":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
 			return "file"
 		}
-	case len(parts) == 2 && parts[0] == "skills":
+	case len(parts) == 2 && parts[0] == "sk":
 		name := strings.TrimSuffix(parts[1], ".md")
 		if _, err := skills.Read(name); err == nil {
 			return "file"
@@ -376,7 +376,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	// Skill files are served via pkg/skills (reads from disk each time).
-	if strings.HasPrefix(path, "/skills/") {
+	if strings.HasPrefix(path, "/sk/") {
 		name := strings.TrimSuffix(pathBase(path), ".md")
 		content, err := skills.Read(name)
 		if err != nil {
@@ -876,7 +876,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
 		dirs = append(dirs, makeDir("prompts", "/prompts", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
-		dirs = append(dirs, makeDir("skills", "/skills", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 	} else if path == "/prompts" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
@@ -884,10 +884,10 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 				dirs = append(dirs, makeDir(e.Name(), "/prompts/"+e.Name(), false, 0666))
 			}
 		}
-	} else if path == "/skills" {
+	} else if path == "/sk" {
 		for _, m := range skills.List() {
 			name := m.Name + ".md"
-			dirs = append(dirs, makeDir(name, "/skills/"+name, false, 0444))
+			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0444))
 		}
 	} else if path == "/s" {
 		s.mu.RLock()
@@ -977,7 +977,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		default:
 			if strings.HasPrefix(path, "/prompts/") {
 				mode = 0666
-			} else if strings.HasPrefix(path, "/skills/") {
+			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0444
 			} else {
 				mode = 0444
