@@ -198,13 +198,13 @@ func (s *Server) pathType(path string) string {
 		return "file"
 	case len(parts) == 1 && parts[0] == "s":
 		return "dir"
-	case len(parts) == 1 && parts[0] == "prompts":
+	case len(parts) == 1 && parts[0] == "p":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "sk":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
 		return "dir"
-	case len(parts) == 2 && parts[0] == "prompts":
+	case len(parts) == 2 && parts[0] == "p":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
 			return "file"
 		}
@@ -364,7 +364,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	// Prompt files are served from disk.
-	if strings.HasPrefix(path, "/prompts/") {
+	if strings.HasPrefix(path, "/p/") {
 		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -586,7 +586,7 @@ func (s *Server) handleWrite(path, input string) {
 	}
 
 	// Prompt file writes go directly to disk.
-	if strings.HasPrefix(path, "/prompts/") {
+	if strings.HasPrefix(path, "/p/") {
 		if err := os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "olliesrv: write prompt: %v\n", err)
 		}
@@ -906,15 +906,15 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 
 	if path == "/" {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
-		dirs = append(dirs, makeDir("prompts", "/prompts", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0555))
-	} else if path == "/prompts" {
+	} else if path == "/p" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
 			if !e.IsDir() {
-				dirs = append(dirs, makeDir(e.Name(), "/prompts/"+e.Name(), false, 0666))
+				dirs = append(dirs, makeDir(e.Name(), "/p/"+e.Name(), false, 0666))
 			}
 		}
 	} else if path == "/sk" {
@@ -1015,7 +1015,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
 		default:
-			if strings.HasPrefix(path, "/prompts/") {
+			if strings.HasPrefix(path, "/p/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0444
