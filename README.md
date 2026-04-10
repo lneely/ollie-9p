@@ -111,21 +111,88 @@ echo "kill <session-id>" > ~/mnt/ollie/ctl
 
 ## Possible Applications
 
+### Automation & Scripting
+
 **Scripting and automation** — shell scripts that submit prompts, poll `state` until idle, then read `chat` for the result. No SDK, no HTTP client, just file I/O. Works in any language that can write to a file.
 
 **Multiplexing sessions** — run several agents in parallel, each in their own session directory, and fan work out to them from a shell script. Coordinate by watching their `state` files.
 
-**Integration with existing Unix tools** — pipe `chat` into `grep`, `awk`, `sed`. Diff two sessions' outputs. Log conversations with `cp`. Search history across sessions with `grep -r`.
+**Hooks and watchers** — poll `state` in a loop to trigger actions when the agent finishes, or use `tail -f chat` to react to new output. Build lightweight event-driven pipelines with standard shell tools.
+
+### Tooling & Integration
+
+**Unix tools** — pipe `chat` into `grep`, `awk`, `sed`. Diff two sessions' outputs. Log conversations with `cp`. Search history across sessions with `grep -r`.
 
 **Editor integration** — any editor that can read/write files gets agent access for free. In `acme` or `sam`, you write to `prompt` and read back `chat` with no plugin required. Fits naturally into the Plan 9 workflow.
 
 **Lightweight TUI alternatives** — `watch cat state` as a status bar, `tail -f chat` in one pane, prompt submission in another. Compose a working interface entirely from standard tools.
 
+### Network & Remote Access
+
 **Remote access** — 9P is a network protocol. Export the namespace over the network and access agent sessions from another machine using the same file interface, with no additional daemon or API layer.
 
-**Agent chaining** — pipe one agent's `reply` into another session's `prompt`. Poll until `reply` is non-empty (stat size > 0), consume it, submit to the next agent. Writing to `prompt` clears `reply` as a side-effect, so the handoff is clean.
+### Multi-Agent Workflows
 
-**Hooks and watchers** — poll `state` in a loop to trigger actions when the agent finishes, or use `tail -f chat` to react to new output. Build lightweight event-driven pipelines with standard shell tools.
+Each session exposes a `reply` file containing only the assistant text from the most recently completed turn. Writing to `prompt` clears `reply` as a side-effect. Together these make agent-to-agent handoffs expressible as plain file operations — no message queue, no orchestration framework, no shared memory.
+
+A shell script is the orchestrator. The agents communicate only through what the script explicitly passes between them, so information flow is fully under your control. Each agent can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`.
+
+#### Example: develop → review → test
+
+Three sessions with specialized agent configs run a feedback loop. The reviewer ends its response with `LGTM` (proceed) or `PTAL` (revise). The tester ends with `Approved` (done) or `Rejected` (revise). The orchestrator parses the verdict with `grep` and routes accordingly.
+
+```sh
+#!/bin/sh
+cd ~/mnt/ollie
+
+echo "new agent=developer" > ctl
+echo "new agent=reviewer"  > ctl
+echo "new agent=tester"    > ctl
+
+dev=$(ls -d [0-9]* | sed -n '1p')
+rev=$(ls -d [0-9]* | sed -n '2p')
+tst=$(ls -d [0-9]* | sed -n '3p')
+
+wait_reply() {
+    while [ "$(wc -c < $1/reply)" -eq 0 ]; do sleep 1; done
+}
+
+echo "implement a function that parses a JSON config file" > $dev/prompt
+
+while true; do
+    wait_reply $dev
+    code=$(cat $dev/reply)
+
+    # review phase
+    printf "Review the following code. End your response with LGTM if it is ready, or PTAL if it needs revision.\n\n%s" "$code" > $rev/prompt
+    wait_reply $rev
+
+    if ! grep -qi "LGTM" $rev/reply; then
+        { echo "revise this code based on the feedback below."
+          echo "--- code ---";     echo "$code"
+          echo "--- feedback ---"; cat $rev/reply
+        } > $dev/prompt
+        continue
+    fi
+
+    # test phase
+    printf "Test the following code. End your response with Approved if all tests pass, or Rejected if they do not.\n\n%s" "$code" > $tst/prompt
+    wait_reply $tst
+
+    if grep -qi "Approved" $tst/reply; then
+        echo "done."
+        echo "$code"
+        break
+    fi
+
+    { echo "fix the failures reported below."
+      echo "--- code ---";        echo "$code"
+      echo "--- test report ---"; cat $tst/reply
+    } > $dev/prompt
+done
+```
+
+Each agent only sees what the orchestrator explicitly sends it. Each can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`. The boundary between fully automated and human-in-the-loop is just whether the script pauses to ask.
 
 ## Example shell session
 
