@@ -9,6 +9,8 @@ The goal is integration, not self-sufficiency. Rather than providing orchestrati
 ```
 ollie/
   ctl                   write: "new [backend=x] [model=x] [agent=x]" | "kill <session-id>"
+  p/                    dir:   prompt templates (r/w, backed by ~/.config/ollie/prompts/)
+    SYSTEM_PROMPT.md    r/w:   the system prompt template
   s/                    dir:   one entry per active session, sorted by creation time
     <session-id>/
       prompt            write: submit a prompt to the agent (clears reply)
@@ -20,6 +22,10 @@ ollie/
       agent             r/w:   active agent name
       model             r/w:   active model name
       workdir           r/w:   working directory for tool execution and system prompt
+  sk/                   dir:   skills (r/o, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
+    <name>.md           read:  skill SKILL.md content
+  t/                    dir:   tool scripts (r/w, backed by ~/.local/share/ollie/tools/)
+    <script>            r/w:   tool script content
 ```
 
 Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
