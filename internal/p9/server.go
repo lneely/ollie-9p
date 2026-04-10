@@ -33,6 +33,7 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
+	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 	"ollie/pkg/tools/file"
@@ -199,8 +200,15 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "prompts":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "skills":
+		return "dir"
 	case len(parts) == 2 && parts[0] == "prompts":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
+			return "file"
+		}
+	case len(parts) == 2 && parts[0] == "skills":
+		name := strings.TrimSuffix(parts[1], ".md")
+		if _, err := skills.Read(name); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "s":
@@ -352,6 +360,25 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Prompt files are served from disk.
 	if strings.HasPrefix(path, "/prompts/") {
 		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		var data []byte
+		off := int(fc.Offset)
+		if off < len(content) {
+			end := off + int(fc.Count)
+			if end > len(content) {
+				end = len(content)
+			}
+			data = content[off:end]
+		}
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+	}
+
+	// Skill files are served via pkg/skills (reads from disk each time).
+	if strings.HasPrefix(path, "/skills/") {
+		name := strings.TrimSuffix(pathBase(path), ".md")
+		content, err := skills.Read(name)
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -849,12 +876,18 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
 		dirs = append(dirs, makeDir("prompts", "/prompts", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("skills", "/skills", true, plan9.DMDIR|0555))
 	} else if path == "/prompts" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
 			if !e.IsDir() {
 				dirs = append(dirs, makeDir(e.Name(), "/prompts/"+e.Name(), false, 0666))
 			}
+		}
+	} else if path == "/skills" {
+		for _, m := range skills.List() {
+			name := m.Name + ".md"
+			dirs = append(dirs, makeDir(name, "/skills/"+name, false, 0444))
 		}
 	} else if path == "/s" {
 		s.mu.RLock()
@@ -944,6 +977,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		default:
 			if strings.HasPrefix(path, "/prompts/") {
 				mode = 0666
+			} else if strings.HasPrefix(path, "/skills/") {
+				mode = 0444
 			} else {
 				mode = 0444
 			}
