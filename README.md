@@ -19,6 +19,7 @@ ollie/
       backend           r/w:   active backend name
       agent             r/w:   active agent name
       model             r/w:   active model name
+      workdir           r/w:   working directory for tool execution and system prompt
 ```
 
 Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
@@ -51,10 +52,11 @@ echo new > ~/mnt/ollie/ctl                                        # all defaults
 echo "new backend=ollama" > ~/mnt/ollie/ctl                       # specific backend
 echo "new backend=ollama model=qwen3:8b" > ~/mnt/ollie/ctl        # backend + model
 echo "new backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
+echo "new workdir=/home/lkn/src/myproject" > ~/mnt/ollie/ctl             # set working directory
 ```
 
 All options are optional and can be specified in any order. Unrecognised keys are rejected.
-Valid keys: `backend`, `model`, `agent`.
+Valid keys: `backend`, `model`, `agent`, `workdir`.
 
 A new session directory appears under `s/`, named by Unix nanosecond timestamp + random suffix (e.g. `1744276689123456789-2b986c`).
 
