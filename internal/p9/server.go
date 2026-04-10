@@ -37,6 +37,7 @@ import (
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 	"ollie/pkg/tools/file"
+	"ollie/pkg/tools/reasoning"
 )
 
 const (
@@ -232,7 +233,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "prompt.fifo", "chat", "reply", "backend", "agent", "model", "state", "workdir":
+		case "ctl", "prompt", "prompt.fifo", "chat", "reply", "backend", "agent", "model", "models", "state", "workdir", "usage":
 			return "file"
 		}
 	}
@@ -548,6 +549,10 @@ func (s *Server) readFile(path string) string {
 		return sess.state + "\n"
 	case "workdir":
 		return sess.workdir + "\n"
+	case "usage":
+		return sess.core.Usage() + "\n"
+	case "models":
+		return sess.core.ListModels() + "\n"
 	}
 	return ""
 }
@@ -839,8 +844,9 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(workdir),
-		"file":    file.Decl,
+		"execute":   execute.Decl(workdir),
+		"file":      file.Decl,
+		"reasoning": reasoning.Decl(),
 	})
 
 	env := agent.BuildAgentEnv(cfg, newDisp(), workdir)
@@ -991,6 +997,8 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"agent", 0666},
 			{"model", 0666},
 			{"workdir", 0666},
+			{"usage", 0444},
+			{"models", 0444},
 		}
 		for _, e := range files {
 			dirs = append(dirs, makeDir(e.name, sessPath+"/"+e.name, false, e.mode))
@@ -1051,7 +1059,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0200
 		case "prompt.fifo":
 			mode = 0666
-		case "chat", "reply", "state":
+		case "chat", "reply", "state", "usage", "models":
 			mode = 0444
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
