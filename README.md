@@ -301,6 +301,94 @@ func killSession(sid string) {
 
 Each goroutine spawns, primes, waits, and cleans up independently. The only serialised step is session creation, to avoid a race between snapshotting existing sessions and detecting the new one.
 
+The same pattern works as a reusable agent tool. `spawn_subagents.py` reads a JSON spec from stdin, fans out the work concurrently, and returns a JSON array of results — a single `execute_tool` call from the parent's perspective. Note: this requires adding Python language support to `execute_code`, `execute_tool`, and `execute_pipe`, which is low effort.
+
+```python
+#!/usr/bin/env python3
+"""spawn_subagents.py — fan out tasks to ephemeral olliesrv sub-agents.
+
+Input  (stdin):  JSON array of {"task": str, "agent": str, "context": str}
+Output (stdout): JSON array of {"agent": str, "reply": str}
+
+Install in $OLLIE_TOOLS_PATH to make available via execute_tool.
+"""
+
+import json, os, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+BASE         = Path.home() / "mnt" / "ollie"
+POLL         = 0.5
+_spawn_lock  = threading.Lock()
+
+
+def session_ids():
+    return {e.name for e in BASE.iterdir() if e.is_dir()}
+
+def spawn_session(agent="default"):
+    with _spawn_lock:
+        before = session_ids()
+        (BASE / "ctl").write_text(f"new agent={agent}\n")
+        while True:
+            new = session_ids() - before
+            if new:
+                return new.pop()
+            time.sleep(0.1)
+
+def kill_session(sid):
+    (BASE / "ctl").write_text(f"kill {sid}\n")
+
+def wait_reply(sid):
+    path = BASE / sid / "reply"
+    while True:
+        if path.stat().st_size > 0:
+            return path.read_text().strip()
+        time.sleep(POLL)
+
+def run_subagent(spec):
+    agent   = spec.get("agent", "default")
+    context = spec.get("context", "")
+    task    = spec.get("task", "")
+    sid     = spawn_session(agent)
+    try:
+        prompt = f"{context}\n\n{task}".strip() if context else task
+        (BASE / sid / "prompt").write_text(prompt)
+        return {"agent": agent, "reply": wait_reply(sid)}
+    finally:
+        kill_session(sid)
+
+def main():
+    specs   = json.load(sys.stdin)
+    results = [None] * len(specs)
+    with ThreadPoolExecutor(max_workers=len(specs)) as pool:
+        futures = {pool.submit(run_subagent, s): i for i, s in enumerate(specs)}
+        for f in as_completed(futures):
+            results[futures[f]] = f.result()
+    json.dump(results, sys.stdout, indent=2)
+    print()
+
+if __name__ == "__main__":
+    main()
+```
+
+The parent agent constructs the spec and makes a single tool call:
+
+```json
+[
+  { "task": "review this code for correctness", "agent": "reviewer", "context": "..." },
+  { "task": "check this code for security issues", "agent": "security", "context": "..." }
+]
+```
+
+Results come back as:
+
+```json
+[
+  { "agent": "reviewer", "reply": "..." },
+  { "agent": "security", "reply": "..." }
+]
+```
+
 ### Self-Generating Workflows
 
 Since agents have access to `execute_code`, a session can write and execute a workflow script without any human involvement. Given a task and knowledge of the filesystem layout, an agent can decompose the work, spawn sessions, write the coordination script, and run it — all in a single turn. The README you are reading is essentially its system prompt. Conductor functionality, for free.
