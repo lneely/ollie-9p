@@ -232,7 +232,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "chat", "reply", "backend", "agent", "model", "state", "workdir":
+		case "ctl", "prompt", "prompt.fifo", "chat", "reply", "backend", "agent", "model", "state", "workdir":
 			return "file"
 		}
 	}
@@ -355,12 +355,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
-	// chat and reply are served directly from session buffers by offset.
+	// chat, reply, and prompt.fifo are served from session state.
 	switch pathBase(path) {
 	case "chat":
 		return s.readChat(fc, path)
 	case "reply":
 		return s.readReply(fc, path)
+	case "prompt.fifo":
+		return s.readPromptFIFO(fc, path)
 	}
 
 	// Prompt files are served from disk.
@@ -458,6 +460,33 @@ func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
 			end = len(log)
 		}
 		data = log[off:end]
+	}
+	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+}
+
+// readPromptFIFO pops the next queued prompt from the session's FIFO.
+func (s *Server) readPromptFIFO(fc *plan9.Fcall, path string) *plan9.Fcall {
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) != 3 || parts[0] != "s" {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+	s.mu.RLock()
+	sess := s.sessions[parts[1]]
+	s.mu.RUnlock()
+	if sess == nil {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+	item, ok := sess.core.PopQueue()
+	if !ok {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+	data := []byte(item)
+	if int(fc.Offset) >= len(data) {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
+	data = data[fc.Offset:]
+	if uint32(len(data)) > fc.Count {
+		data = data[:fc.Count]
 	}
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 }
@@ -640,6 +669,12 @@ func (s *Server) handleWrite(path, input string) {
 
 	switch fileName {
 	case "prompt":
+		// If the agent is busy, inject mid-turn instead of starting a new turn.
+		if sess.core.IsRunning() {
+			sess.core.Inject(input)
+			sess.appendChat([]byte("user (interrupt): " + input + "\n"))
+			return
+		}
 		sess.appendChat([]byte("user: " + input + "\n"))
 		// Clear reply before submission — documented side-effect.
 		sess.mu.Lock()
@@ -660,6 +695,9 @@ func (s *Server) handleWrite(path, input string) {
 		sess.replyVers++
 		sess.mu.Unlock()
 		sess.setState("idle")
+
+	case "prompt.fifo":
+		sess.core.Queue(input)
 
 	case "ctl":
 		switch {
@@ -945,6 +983,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		files := []entry{
 			{"ctl", 0200},
 			{"prompt", 0200},
+			{"prompt.fifo", 0666},
 			{"chat", 0444},
 			{"reply", 0444},
 			{"state", 0444},
@@ -1010,6 +1049,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt":
 			mode = 0200
+		case "prompt.fifo":
+			mode = 0666
 		case "chat", "reply", "state":
 			mode = 0444
 		case "backend", "agent", "model", "workdir":
