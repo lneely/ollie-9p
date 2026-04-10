@@ -59,6 +59,7 @@ type session struct {
 	// state is the current agent state: "idle", "thinking", "calling: <tool>"
 	state     string
 	modelName string
+	workdir   string
 	// reply holds only the assistant text from the most recently completed
 	// turn. Cleared when a new prompt is submitted. Read-only; 0444.
 	reply     []byte
@@ -209,7 +210,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "chat", "reply", "backend", "agent", "model", "state":
+		case "ctl", "prompt", "chat", "reply", "backend", "agent", "model", "state", "workdir":
 			return "file"
 		}
 	}
@@ -439,6 +440,8 @@ func (s *Server) readFile(path string) string {
 		return sess.modelName + "\n"
 	case "state":
 		return sess.state + "\n"
+	case "workdir":
+		return sess.workdir + "\n"
 	}
 	return ""
 }
@@ -620,6 +623,11 @@ func (s *Server) handleWrite(path, input string) {
 			}
 			publish(ev)
 		})
+
+	case "workdir":
+		sess.mu.Lock()
+		sess.workdir = input
+		sess.mu.Unlock()
 	}
 }
 
@@ -645,12 +653,13 @@ func (s *Server) handleRootCtl(input string) {
 }
 
 // createSession parses key=value options and starts a new agent session.
-// Recognised keys: backend, model, agent. Unknown keys are rejected.
-// Example: new backend=ollama model=qwen3:8b agent=myagent
+// Recognised keys: backend, model, agent, workdir. Unknown keys are rejected.
+// Example: new backend=ollama model=qwen3:8b agent=myagent workdir=/home/lkn/src/myproject
 func (s *Server) createSession(args []string) error {
 	backendOverride := ""
 	modelOverride := ""
 	agentName := "default"
+	workdir := ""
 
 	for _, arg := range args {
 		k, v, ok := strings.Cut(arg, "=")
@@ -664,8 +673,10 @@ func (s *Server) createSession(args []string) error {
 			modelOverride = v
 		case "agent":
 			agentName = v
+		case "workdir":
+			workdir = v
 		default:
-			return fmt.Errorf("unknown option %q (valid: backend, model, agent)", k)
+			return fmt.Errorf("unknown option %q (valid: backend, model, agent, workdir)", k)
 		}
 	}
 
@@ -697,11 +708,11 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl,
+		"execute": execute.Decl(workdir),
 		"file":    file.Decl,
 	})
 
-	env := agent.BuildAgentEnv(cfg, newDisp())
+	env := agent.BuildAgentEnv(cfg, newDisp(), workdir)
 	sessID := agent.NewSessionID()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -711,6 +722,7 @@ func (s *Server) createSession(args []string) error {
 		AgentsDir:     s.agentsDir,
 		SessionsDir:   s.sessionsDir,
 		SessionID:     sessID,
+		WorkDir:       workdir,
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
@@ -721,6 +733,7 @@ func (s *Server) createSession(args []string) error {
 		backendName: be.Name(),
 		agentName:   agentName,
 		modelName:   be.Model(),
+		workdir:     workdir,
 		ctx:         ctx,
 		cancel:      cancel,
 		state:       "idle",
@@ -823,6 +836,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"backend", 0666},
 			{"agent", 0666},
 			{"model", 0666},
+			{"workdir", 0666},
 		}
 		for _, e := range files {
 			dirs = append(dirs, makeDir(e.name, sessPath+"/"+e.name, false, e.mode))
@@ -883,7 +897,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0200
 		case "chat", "reply", "state":
 			mode = 0444
-		case "backend", "agent", "model":
+		case "backend", "agent", "model", "workdir":
 			mode = 0666
 		default:
 			mode = 0444
