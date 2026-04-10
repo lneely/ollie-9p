@@ -48,11 +48,10 @@ The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`)
 ### Create a session
 
 ```sh
-echo new > ~/mnt/ollie/ctl                                        # all defaults
-echo "new backend=ollama" > ~/mnt/ollie/ctl                       # specific backend
-echo "new backend=ollama model=qwen3:8b" > ~/mnt/ollie/ctl        # backend + model
-echo "new backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
-echo "new workdir=/home/lkn/src/myproject" > ~/mnt/ollie/ctl             # set working directory
+echo "new workdir=/home/lkn/src/myproject" > ~/mnt/ollie/ctl
+echo "new workdir=/home/lkn/src/myproject backend=ollama" > ~/mnt/ollie/ctl
+echo "new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b" > ~/mnt/ollie/ctl
+echo "new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
 ```
 
 All options are optional and can be specified in any order. Unrecognised keys are rejected.
@@ -150,14 +149,15 @@ Three sessions with specialized agent configs run a feedback loop. The reviewer 
 
 ```sh
 #!/bin/sh
+workdir=${1:?usage: $0 <workdir>}
 cd ~/mnt/ollie
 
 # Count existing sessions so we can identify the newly created ones by offset.
 n=$(ls s/ | wc -l)
 
-echo "new agent=developer" > ctl
-echo "new agent=reviewer"  > ctl
-echo "new agent=tester"    > ctl
+echo "new agent=developer workdir=$workdir" > ctl
+echo "new agent=reviewer  workdir=$workdir" > ctl
+echo "new agent=tester    workdir=$workdir" > ctl
 
 dev=$(ls s/ | sort | sed -n "$((n+1))p")
 rev=$(ls s/ | sort | sed -n "$((n+2))p")
@@ -234,10 +234,10 @@ _spawn_lock  = threading.Lock()
 def session_ids():
     return {e.name for e in (BASE / "s").iterdir() if e.is_dir()}
 
-def spawn_session(agent="default"):
+def spawn_session(agent="default", workdir=""):
     with _spawn_lock:
         before = session_ids()
-        (BASE / "ctl").write_text(f"new agent={agent}\n")
+        (BASE / "ctl").write_text(f"new agent={agent} workdir={workdir}\n")
         while True:
             new = session_ids() - before
             if new:
@@ -256,9 +256,10 @@ def wait_reply(sid):
 
 def run_subagent(spec):
     agent   = spec.get("agent", "default")
+    workdir = spec.get("workdir", "")
     context = spec.get("context", "")
     task    = spec.get("task", "")
-    sid     = spawn_session(agent)
+    sid     = spawn_session(agent, workdir)
     try:
         prompt = f"{context}\n\n{task}".strip() if context else task
         (BASE / "s" / sid / "prompt").write_text(prompt)
@@ -309,7 +310,7 @@ Since agents have access to `execute_code`, a session can write and execute a wo
 ## Example shell session
 
 ```sh
-$ echo new > ~/mnt/ollie/ctl
+$ echo "new workdir=/home/lkn/src/ollie" > ~/mnt/ollie/ctl
 $ ls ~/mnt/ollie/s/
 1744276689123456789-2b986c
 $ cd ~/mnt/ollie/s/1744276689123456789-2b986c
