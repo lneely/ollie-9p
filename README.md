@@ -202,6 +202,105 @@ A session can spawn ephemeral child sessions to handle a focused task, then tear
 
 **Sub-agents as function calls** — the parent primes the child with exactly the context it needs (excerpts from its own `chat`, relevant beads, local file contents) and receives a single focused reply. Failures are isolated; a child that errors or stalls can be killed and retried without affecting the parent. The pattern composes naturally: a sub-agent can itself spawn sub-agents, building a call tree bounded only by the number of sessions open at once.
 
+The coordination logic can be written in any language that reads and writes files. The following Go example fans out N sub-agents concurrently, waits for all replies, and collects the results:
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+var base = filepath.Join(os.Getenv("HOME"), "mnt", "ollie")
+
+func main() {
+	tasks := []string{
+		"summarize the key ideas in functional programming",
+		"summarize the key ideas in object-oriented programming",
+		"summarize the key ideas in logic programming",
+	}
+	for i, reply := range runSubAgents(tasks) {
+		fmt.Printf("=== agent %d ===\n%s\n", i+1, reply)
+	}
+}
+
+func runSubAgents(tasks []string) []string {
+	type result struct {
+		idx   int
+		reply string
+	}
+	results := make([]string, len(tasks))
+	ch := make(chan result, len(tasks))
+	var wg sync.WaitGroup
+
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(idx int, task string) {
+			defer wg.Done()
+			sid := spawnSession()
+			defer killSession(sid)
+			os.WriteFile(filepath.Join(base, sid, "prompt"), []byte(task), 0644)
+			ch <- result{idx, waitReply(filepath.Join(base, sid, "reply"))}
+		}(i, task)
+	}
+	go func() { wg.Wait(); close(ch) }()
+	for r := range ch {
+		results[r.idx] = r.reply
+	}
+	return results
+}
+
+// spawnSession is serialised to avoid a race between snapshot and detection.
+var spawnMu sync.Mutex
+
+func spawnSession() string {
+	spawnMu.Lock()
+	defer spawnMu.Unlock()
+	before := sessionIDs()
+	os.WriteFile(filepath.Join(base, "ctl"), []byte("new\n"), 0644)
+	for {
+		for id := range sessionIDs() {
+			if !before[id] {
+				return id
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func sessionIDs() map[string]bool {
+	entries, _ := os.ReadDir(base)
+	ids := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() {
+			ids[e.Name()] = true
+		}
+	}
+	return ids
+}
+
+func waitReply(path string) string {
+	for {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			data, _ := os.ReadFile(path)
+			return strings.TrimSpace(string(data))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func killSession(sid string) {
+	os.WriteFile(filepath.Join(base, "ctl"), []byte("kill "+sid+"\n"), 0644)
+}
+```
+
+Each goroutine spawns, primes, waits, and cleans up independently. The only serialised step is session creation, to avoid a race between snapshotting existing sessions and detecting the new one.
+
 ### Self-Generating Workflows
 
 Since agents have access to `execute_code`, a session can write and execute a workflow script without any human involvement. Given a task and knowledge of the filesystem layout, an agent can decompose the work, spawn sessions, write the coordination script, and run it — all in a single turn. The README you are reading is essentially its system prompt. Conductor functionality, for free.
