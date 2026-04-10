@@ -111,7 +111,7 @@ echo myagent > ~/mnt/ollie/<session-id>/agent
 echo "kill <session-id>" > ~/mnt/ollie/ctl
 ```
 
-## Possible Applications
+## Ideas
 
 ### Automation & Scripting
 
@@ -195,6 +195,10 @@ done
 ```
 
 Each agent only sees what the script explicitly sends it. Each can use a different backend, model, or tool configuration. A human can intervene at any point by writing directly to a session's `prompt`. The boundary between fully automated and human-in-the-loop is just whether the script pauses to ask.
+
+### Self-Generating Workflows
+
+Since agents have access to `execute_code`, a session can write and execute a workflow script without any human involvement. Given a task and knowledge of the filesystem layout, an agent can decompose the work, spawn sessions, write the coordination script, and run it — all in a single turn. The README you are reading is essentially its system prompt. Conductor functionality, for free.
 
 ## Example shell session
 
