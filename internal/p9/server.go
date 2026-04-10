@@ -18,7 +18,6 @@ package p9
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -26,7 +25,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"9fans.net/go/plan9"
 	"ollie/pkg/agent"
@@ -105,11 +103,10 @@ type Server struct {
 
 // New creates a new Server.
 func New() *Server {
-	home, _ := os.UserHomeDir()
 	return &Server{
 		sessions:    make(map[string]*session),
-		agentsDir:   home + "/.config/ollie/agents",
-		sessionsDir: home + "/.config/ollie/sessions",
+		agentsDir:   agent.DefaultAgentsDir(),
+		sessionsDir: agent.DefaultSessionsDir(),
 	}
 }
 
@@ -646,8 +643,6 @@ func (s *Server) handleRootCtl(input string) {
 // Recognised keys: backend, model, agent. Unknown keys are rejected.
 // Example: new backend=ollama model=qwen3:8b agent=myagent
 func (s *Server) createSession(args []string) error {
-	home, _ := os.UserHomeDir()
-
 	backendOverride := ""
 	modelOverride := ""
 	agentName := "default"
@@ -693,21 +688,16 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("sessions dir: %w", err)
 	}
 
-	cfgPath := agentConfigPath(s.agentsDir, agentName)
+	cfgPath := agent.AgentConfigPath(s.agentsDir, agentName)
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
-	newDisp := func() tools.Dispatcher {
-		d := tools.NewDispatcher()
-		d.AddServer("execute", execute.New(
-			home+"/.local/state/ollie",
-			home+"/.cache/ollie/exec",
-		))
-		d.AddServer("file", file.New())
-		return d
-	}
+	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
+		"execute": execute.Decl,
+		"file":    file.Decl,
+	})
 
 	env := agent.BuildAgentEnv(cfg, newDisp())
-	sessID := newSessionID()
+	sessID := agent.NewSessionID()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
@@ -751,24 +741,7 @@ func (s *Server) killSession(id string) {
 	}
 }
 
-// agentConfigPath resolves the config file for a named agent.
-func agentConfigPath(agentsDir, name string) string {
-	p := agentsDir + "/" + name + ".json"
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	if name == "default" {
-		home, _ := os.UserHomeDir()
-		return home + "/.config/ollie/config.json"
-	}
-	return p
-}
 
-func newSessionID() string {
-	b := make([]byte, 3)
-	rand.Read(b) //nolint:errcheck
-	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
-}
 
 // formatEvent converts an agent Event to bytes for appending to the chat log.
 // Output matches ollie-tui's MakeOutputFn so the chat file looks identical to
