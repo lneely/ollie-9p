@@ -552,7 +552,7 @@ func (s *Server) readFile(path string) string {
 	case "state":
 		return sess.state + "\n"
 	case "workdir":
-		return sess.workdir + "\n"
+		return sess.core.WorkDir() + "\n"
 	case "usage":
 		return sess.core.Usage() + "\n"
 	case "models":
