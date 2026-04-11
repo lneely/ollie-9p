@@ -333,3 +333,12 @@ assistant: The Go source files are: core.go, loop.go, ...
 $ cat state
 idle
 ```
+
+## Credits
+
+Many sources of inspiration:
+
+- [Plan 9 from Bell Labs](https://9fans.net) — for an interesting system
+- [@9fans](https://github.com/9fans) — for the Plan 9 port
+- [Suckless](https://suckless.org) — for articulating good software development principles
+
