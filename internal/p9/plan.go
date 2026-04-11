@@ -3,30 +3,30 @@ package p9
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
+	"ollie/pkg/agent"
 	"ollie/pkg/tools"
 )
 
 // queuePlanBackend implements tools.PlanBackend by enqueuing each step as a
-// prompt into the session's queue file. It is used as the reasoning_plan
-// fallback when no task_create MCP tool is available.
+// prompt into the session's queue via agent.Core.Queue. It is used as the
+// reasoning_plan fallback when no task_create MCP tool is available.
 //
 // Steps are enqueued in topological order (blockers before dependents). The
 // goal description is prepended to the first step for context. Placeholder IDs
 // ("q1", "q2", …) are returned so the agent can refer to steps by name.
 type queuePlanBackend struct {
-	enqueuePath string // absolute path to the session's enqueue file
+	core agent.Core
 }
 
 // CreatePlan enqueues each plan step as a prompt. Steps with After dependencies
 // are sorted so blockers are enqueued before the steps that depend on them.
 // The returned IDs are positional placeholders ("q1", "q2", …).
-func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []tools.PlanStep) ([]string, error) {
+func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []tools.PlanStep) ([]string, string, error) {
 	order, err := topoSort(steps)
 	if err != nil {
-		return nil, fmt.Errorf("queue plan: %w", err)
+		return nil, "", fmt.Errorf("queue plan: %w", err)
 	}
 
 	ids := make([]string, len(steps))
@@ -61,11 +61,15 @@ func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []to
 			sb.WriteString(")")
 		}
 
-		if err := os.WriteFile(b.enqueuePath, []byte(sb.String()+"\n"), 0644); err != nil {
-			return nil, fmt.Errorf("enqueue step %s: %w", ids[idx], err)
-		}
+		b.core.Queue(sb.String())
 	}
-	return ids, nil
+
+	msg := fmt.Sprintf(
+		"Plan queued (%d steps). Stop here — do not execute. "+
+			"The queue will re-enter you with each step in order.",
+		len(steps),
+	)
+	return ids, msg, nil
 }
 
 // topoSort returns the indices of steps in topological order (blockers first).

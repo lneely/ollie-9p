@@ -857,8 +857,7 @@ func (s *Server) createSession(args []string) error {
 	})
 
 	sessID := agent.NewSessionID()
-	enqueuePath := s.sessionsDir + "/" + sessID + "/enqueue"
-	fallback := &queuePlanBackend{enqueuePath: enqueuePath}
+	fallback := &queuePlanBackend{}
 	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -872,6 +871,7 @@ func (s *Server) createSession(args []string) error {
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
+	fallback.core = core
 
 	sess := &session{
 		id:          sessID,
