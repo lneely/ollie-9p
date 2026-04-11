@@ -664,9 +664,6 @@ func (s *Server) handleWrite(path, input string) {
 			sess.appendChat([]byte("user (interrupt): " + input + "\n"))
 			return
 		}
-		sess.mu.Lock()
-		sess.replyVers++
-		sess.mu.Unlock()
 		sess.core.Submit(sess.ctx, input, publish)
 		sess.mu.Lock()
 		sess.replyVers++
