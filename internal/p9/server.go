@@ -658,12 +658,6 @@ func (s *Server) handleWrite(path, input string) {
 
 	switch fileName {
 	case "prompt":
-		// If the agent is busy, inject mid-turn instead of starting a new turn.
-		if sess.core.IsRunning() {
-			sess.core.Inject(input)
-			sess.appendChat([]byte("user (interrupt): " + input + "\n"))
-			return
-		}
 		sess.core.Submit(sess.ctx, input, publish)
 		sess.mu.Lock()
 		sess.replyVers++
