@@ -684,7 +684,6 @@ func (s *Server) handleWrite(path, input string) {
 			sess.appendChat([]byte("user (interrupt): " + input + "\n"))
 			return
 		}
-		sess.appendChat([]byte("user: " + input + "\n"))
 		// Clear reply before submission — documented side-effect.
 		sess.mu.Lock()
 		sess.reply = nil
@@ -911,6 +910,8 @@ func (s *Server) killSession(id string) {
 // what appears in the TUI chat pane.
 func formatEvent(ev agent.Event) []byte {
 	switch ev.Role {
+	case "user":
+		return []byte("user: " + ev.Content + "\n")
 	case "assistant":
 		return []byte(ev.Content)
 	case "call":
