@@ -48,31 +48,19 @@ const (
 
 // session holds all state for one ollie agent session.
 type session struct {
-	mu          sync.RWMutex
-	id          string
-	core        agent.Core
-	backendName string
-	agentName   string
-	ctx         context.Context
-	cancel      context.CancelFunc
+	mu     sync.RWMutex
+	id     string
+	core   agent.Core
+	ctx    context.Context
+	cancel context.CancelFunc
 	// chatLog is an append-only record of the conversation. Reads are served
 	// directly from this buffer by offset, so tail -f works via polling.
 	chatLog  []byte
 	chatVers uint32 // incremented on each append; used as Qid.Vers
-	// state is the current agent state: "idle", "thinking", "calling: <tool>"
-	state     string
-	modelName string
-	// reply holds only the assistant text from the most recently completed
-	// turn. Cleared when a new prompt is submitted. Read-only; 0444.
-	reply     []byte
+	// replyVers is incremented on each turn to drive Qid.Vers for polling.
 	replyVers uint32
 }
 
-func (sess *session) setState(s string) {
-	sess.mu.Lock()
-	sess.state = s
-	sess.mu.Unlock()
-}
 
 // appendChat appends data to the session's chat log and bumps the Qid version.
 func (sess *session) appendChat(data []byte) {
@@ -507,9 +495,7 @@ func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 	}
 
-	sess.mu.RLock()
-	buf := sess.reply
-	sess.mu.RUnlock()
+	buf := []byte(sess.core.Reply())
 
 	var data []byte
 	off := int(fc.Offset)
@@ -542,13 +528,13 @@ func (s *Server) readFile(path string) string {
 	defer sess.mu.RUnlock()
 	switch fileName {
 	case "backend":
-		return sess.backendName + "\n"
+		return sess.core.BackendName() + "\n"
 	case "agent":
-		return sess.agentName + "\n"
+		return sess.core.AgentName() + "\n"
 	case "model":
-		return sess.modelName + "\n"
+		return sess.core.ModelName() + "\n"
 	case "state":
-		return sess.state + "\n"
+		return sess.core.State() + "\n"
 	case "workdir":
 		return sess.core.WorkDir() + "\n"
 	case "usage":
@@ -659,13 +645,7 @@ func (s *Server) handleWrite(path, input string) {
 	assistantStarted := false
 	publish := func(ev agent.Event) {
 		switch ev.Role {
-		case "call":
-			sess.setState("calling: " + ev.Name)
-			assistantStarted = false
-		case "tool":
-			sess.setState("thinking")
-			assistantStarted = false
-		case "newline":
+		case "call", "tool", "newline":
 			assistantStarted = false
 		case "assistant":
 			if !assistantStarted {
@@ -684,25 +664,13 @@ func (s *Server) handleWrite(path, input string) {
 			sess.appendChat([]byte("user (interrupt): " + input + "\n"))
 			return
 		}
-		// Clear reply before submission — documented side-effect.
 		sess.mu.Lock()
-		sess.reply = nil
 		sess.replyVers++
 		sess.mu.Unlock()
-		sess.setState("thinking")
-		var replyBuf []byte
-		sess.core.Submit(sess.ctx, input, func(ev agent.Event) {
-			if ev.Role == "assistant" {
-				replyBuf = append(replyBuf, []byte(ev.Content)...)
-			}
-			publish(ev)
-		})
-		// Atomically publish reply on turn completion.
+		sess.core.Submit(sess.ctx, input, publish)
 		sess.mu.Lock()
-		sess.reply = replyBuf
 		sess.replyVers++
 		sess.mu.Unlock()
-		sess.setState("idle")
 
 	case "enqueue":
 		sess.core.Queue(input)
@@ -718,50 +686,17 @@ func (s *Server) handleWrite(path, input string) {
 		}
 
 	case "backend":
-		sess.mu.Lock()
-		old := sess.backendName
-		sess.backendName = input
-		sess.mu.Unlock()
-		sess.core.Submit(sess.ctx, "/backend "+input, func(ev agent.Event) {
-			if ev.Role == "error" {
-				sess.mu.Lock()
-				sess.backendName = old
-				sess.mu.Unlock()
-			}
-			publish(ev)
-		})
+		sess.core.Submit(sess.ctx, "/backend "+input, publish)
 
 	case "agent":
-		sess.mu.Lock()
-		old := sess.agentName
-		sess.agentName = input
-		sess.mu.Unlock()
-		sess.core.Submit(sess.ctx, "/agent "+input, func(ev agent.Event) {
-			if ev.Role == "error" {
-				sess.mu.Lock()
-				sess.agentName = old
-				sess.mu.Unlock()
-			}
-			publish(ev)
-		})
+		sess.core.Submit(sess.ctx, "/agent "+input, publish)
 
 	case "model":
 		if input == "" {
 			fmt.Fprintf(os.Stderr, "olliesrv: model: empty model name\n")
 			return
 		}
-		sess.mu.Lock()
-		old := sess.modelName
-		sess.modelName = input
-		sess.mu.Unlock()
-		sess.core.Submit(sess.ctx, "/model "+input, func(ev agent.Event) {
-			if ev.Role == "error" {
-				sess.mu.Lock()
-				sess.modelName = old
-				sess.mu.Unlock()
-			}
-			publish(ev)
-		})
+		sess.core.Submit(sess.ctx, "/model "+input, publish)
 
 	case "workdir":
 		if err := sess.core.SetWorkDir(input); err != nil {
@@ -873,14 +808,10 @@ func (s *Server) createSession(args []string) error {
 	fallback.core = core
 
 	sess := &session{
-		id:          sessID,
-		core:        core,
-		backendName: be.Name(),
-		agentName:   agentName,
-		modelName:   be.Model(),
-		ctx:         ctx,
-		cancel:      cancel,
-		state:       "idle",
+		id:     sessID,
+		core:   core,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	s.mu.Lock()
@@ -888,7 +819,7 @@ func (s *Server) createSession(args []string) error {
 	s.mu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "olliesrv: new session %s (backend=%s model=%s agent=%s)\n",
-		sessID, sess.backendName, sess.modelName, agentName)
+		sessID, core.BackendName(), core.ModelName(), core.AgentName())
 	return nil
 }
 
@@ -1104,15 +1035,17 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			sess := s.sessions[parts[1]]
 			s.mu.RUnlock()
 			if sess != nil {
-				sess.mu.RLock()
 				if base == "chat" {
+					sess.mu.RLock()
 					dir.Length = uint64(len(sess.chatLog))
 					dir.Qid.Vers = sess.chatVers
+					sess.mu.RUnlock()
 				} else {
-					dir.Length = uint64(len(sess.reply))
+					dir.Length = uint64(len(sess.core.Reply()))
+					sess.mu.RLock()
 					dir.Qid.Vers = sess.replyVers
+					sess.mu.RUnlock()
 				}
-				sess.mu.RUnlock()
 			}
 		}
 	}
