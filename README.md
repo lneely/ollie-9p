@@ -227,7 +227,7 @@ A session can spawn ephemeral child sessions to handle a focused task, then tear
 Input  (stdin):  JSON array of {"task": str, "agent": str, "context": str}
 Output (stdout): JSON array of {"agent": str, "reply": str}
 
-Install in $OLLIE_TOOLS_PATH to make available via execute_tool.
+Install in ~/.local/share/ollie/tools/ to make available via execute_tool.
 """
 
 import json, os, sys, threading, time
