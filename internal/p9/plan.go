@@ -10,11 +10,11 @@ import (
 )
 
 // queuePlanBackend implements tools.PlanBackend by enqueuing each step as a
-// prompt into the session's queue. It is used as a fallback when no task_create
-// MCP tool is available.
+// prompt into the session's queue file. It is used as the reasoning_plan
+// fallback when no task_create MCP tool is available.
 //
-// Steps are enqueued in dependency order (topological). The goal description is
-// prepended to the first step so the agent has context. Placeholder IDs
+// Steps are enqueued in topological order (blockers before dependents). The
+// goal description is prepended to the first step for context. Placeholder IDs
 // ("q1", "q2", …) are returned so the agent can refer to steps by name.
 type queuePlanBackend struct {
 	enqueuePath string // absolute path to the session's enqueue file
@@ -24,7 +24,6 @@ type queuePlanBackend struct {
 // are sorted so blockers are enqueued before the steps that depend on them.
 // The returned IDs are positional placeholders ("q1", "q2", …).
 func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []tools.PlanStep) ([]string, error) {
-	// Topological sort so each step is enqueued after all its blockers.
 	order, err := topoSort(steps)
 	if err != nil {
 		return nil, fmt.Errorf("queue plan: %w", err)
@@ -70,7 +69,6 @@ func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []to
 }
 
 // topoSort returns the indices of steps in topological order (blockers first).
-// It accepts the after-indices directly from PlanStep.After.
 func topoSort(steps []tools.PlanStep) ([]int, error) {
 	n := len(steps)
 	visited := make([]bool, n)
