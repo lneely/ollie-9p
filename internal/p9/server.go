@@ -793,8 +793,8 @@ func (s *Server) handleRootCtl(input string) {
 }
 
 // createSession parses key=value options and starts a new agent session.
-// Recognised keys: backend, model, agent, workdir. Unknown keys are rejected.
-// Example: new backend=ollama model=qwen3:8b agent=myagent workdir=/home/lkn/src/myproject
+// Recognised keys: backend, model, agent, workdir. workdir is required.
+// Example: new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent
 func (s *Server) createSession(args []string) error {
 	backendOverride := ""
 	modelOverride := ""
@@ -818,6 +818,10 @@ func (s *Server) createSession(args []string) error {
 		default:
 			return fmt.Errorf("unknown option %q (valid: backend, model, agent, workdir)", k)
 		}
+	}
+
+	if workdir == "" {
+		return fmt.Errorf("workdir is required (e.g. new workdir=/path/to/project)")
 	}
 
 	var (
