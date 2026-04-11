@@ -14,6 +14,8 @@ ollie/
   s/                    dir:   one entry per active session, sorted by creation time
     <session-id>/
       prompt            write: submit a prompt to the agent (clears reply)
+      enqueue           write: queue a prompt for later execution
+      dequeue           read:  pop the next queued prompt
       chat              read:  cumulative conversation history
       reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)

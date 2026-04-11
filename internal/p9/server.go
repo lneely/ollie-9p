@@ -12,6 +12,8 @@
 //	        {session-id}/
 //	            ctl         (write) session control: compact, clear, interrupt
 //	            prompt      (write) submit a prompt to the agent
+//	            enqueue     (write) queue a prompt for later execution
+//	            dequeue     (read)  pop the next queued prompt
 //	            chat        (read)  cumulative chat history; grows as conversation
 //	                                progresses — use cat for a snapshot, tail -f
 //	                                to follow new output.
@@ -233,7 +235,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "prompt.fifo", "chat", "reply", "backend", "agent", "model", "models", "state", "workdir", "usage":
+		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "state", "workdir", "usage":
 			return "file"
 		}
 	}
@@ -356,14 +358,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
-	// chat, reply, and prompt.fifo are served from session state.
+	// chat, reply, and dequeue are served from session state.
 	switch pathBase(path) {
 	case "chat":
 		return s.readChat(fc, path)
 	case "reply":
 		return s.readReply(fc, path)
-	case "prompt.fifo":
-		return s.readPromptFIFO(fc, path)
+	case "dequeue":
+		return s.readDequeue(fc, path)
 	}
 
 	// Prompt files are served from disk.
@@ -465,8 +467,10 @@ func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 }
 
-// readPromptFIFO pops the next queued prompt from the session's FIFO.
-func (s *Server) readPromptFIFO(fc *plan9.Fcall, path string) *plan9.Fcall {
+// readDequeue pops the next queued prompt from the session's FIFO.
+// Only pops on offset==0; a non-zero offset signals the EOF read that
+// follows a successful read and must not consume another item.
+func (s *Server) readDequeue(fc *plan9.Fcall, path string) *plan9.Fcall {
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 	if len(parts) != 3 || parts[0] != "s" {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
@@ -477,15 +481,15 @@ func (s *Server) readPromptFIFO(fc *plan9.Fcall, path string) *plan9.Fcall {
 	if sess == nil {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 	}
+	// Non-zero offset is the trailing EOF read; don't pop another item.
+	if fc.Offset > 0 {
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+	}
 	item, ok := sess.core.PopQueue()
 	if !ok {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 	}
 	data := []byte(item)
-	if int(fc.Offset) >= len(data) {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	data = data[fc.Offset:]
 	if uint32(len(data)) > fc.Count {
 		data = data[:fc.Count]
 	}
@@ -701,7 +705,7 @@ func (s *Server) handleWrite(path, input string) {
 		sess.mu.Unlock()
 		sess.setState("idle")
 
-	case "prompt.fifo":
+	case "enqueue":
 		sess.core.Queue(input)
 
 	case "ctl":
@@ -989,7 +993,8 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		files := []entry{
 			{"ctl", 0200},
 			{"prompt", 0200},
-			{"prompt.fifo", 0666},
+			{"enqueue", 0200},
+			{"dequeue", 0444},
 			{"chat", 0444},
 			{"reply", 0444},
 			{"state", 0444},
@@ -1055,11 +1060,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		mode = plan9.DMDIR | 0555
 	} else {
 		switch base {
-		case "ctl", "prompt":
+		case "ctl", "prompt", "enqueue":
 			mode = 0200
-		case "prompt.fifo":
-			mode = 0666
-		case "chat", "reply", "state", "usage", "models":
+		case "chat", "reply", "state", "usage", "models", "dequeue":
 			mode = 0444
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
