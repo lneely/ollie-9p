@@ -63,7 +63,6 @@ type session struct {
 	// state is the current agent state: "idle", "thinking", "calling: <tool>"
 	state     string
 	modelName string
-	workdir   string
 	// reply holds only the assistant text from the most recently completed
 	// turn. Cleared when a new prompt is submitted. Read-only; 0444.
 	reply     []byte
@@ -769,11 +768,7 @@ func (s *Server) handleWrite(path, input string) {
 	case "workdir":
 		if err := sess.core.SetWorkDir(input); err != nil {
 			fmt.Fprintf(os.Stderr, "olliesrv: workdir: %v\n", err)
-			return
 		}
-		sess.mu.Lock()
-		sess.workdir = input
-		sess.mu.Unlock()
 	}
 }
 
@@ -880,7 +875,6 @@ func (s *Server) createSession(args []string) error {
 		backendName: be.Name(),
 		agentName:   agentName,
 		modelName:   be.Model(),
-		workdir:     workdir,
 		ctx:         ctx,
 		cancel:      cancel,
 		state:       "idle",
