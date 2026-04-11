@@ -767,6 +767,10 @@ func (s *Server) handleWrite(path, input string) {
 		})
 
 	case "workdir":
+		if err := sess.core.SetWorkDir(input); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: workdir: %v\n", err)
+			return
+		}
 		sess.mu.Lock()
 		sess.workdir = input
 		sess.mu.Unlock()
