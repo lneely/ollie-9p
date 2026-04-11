@@ -856,8 +856,10 @@ func (s *Server) createSession(args []string) error {
 		"reasoning": reasoning.Decl(),
 	})
 
-	env := agent.BuildAgentEnv(cfg, newDisp(), workdir)
 	sessID := agent.NewSessionID()
+	enqueuePath := s.sessionsDir + "/" + sessID + "/enqueue"
+	fallback := &queuePlanBackend{enqueuePath: enqueuePath}
+	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
