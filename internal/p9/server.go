@@ -845,11 +845,7 @@ func formatEvent(ev agent.Event) []byte {
 		}
 		return []byte("-> " + ev.Name + "(" + args + ")\n")
 	case "tool":
-		s := strings.TrimRight(ev.Content, "\n")
-		if len(s) > 500 {
-			s = s[:500] + "..."
-		}
-		return []byte(s + "\n")
+		return []byte(strings.TrimRight(ev.Content, "\n") + "\n")
 	case "retry":
 		return []byte("retrying in " + ev.Content + "s...\n")
 	case "error":
