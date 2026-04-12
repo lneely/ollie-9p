@@ -849,7 +849,7 @@ func formatEvent(ev agent.Event) []byte {
 		if len(s) > 500 {
 			s = s[:500] + "..."
 		}
-		return []byte("= " + s + "\n")
+		return []byte(s + "\n")
 	case "retry":
 		return []byte("retrying in " + ev.Content + "s...\n")
 	case "error":
