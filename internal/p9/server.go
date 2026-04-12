@@ -38,6 +38,7 @@ import (
 	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
+	"ollie/pkg/tools/file"
 	"ollie/pkg/tools/reasoning"
 )
 
@@ -778,6 +779,7 @@ func (s *Server) createSession(args []string) error {
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute":   execute.Decl(workdir),
+		"file":      file.Decl(workdir),
 		"reasoning": reasoning.Decl(),
 	})
 
