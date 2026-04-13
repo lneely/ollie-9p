@@ -725,16 +725,22 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.Lock()
 	f, ok := cs.fids[fc.Fid]
+	var path string
+	var data []byte
 	if ok {
 		if len(f.writeBuf) > 0 {
-			path := f.path
-			data := make([]byte, len(f.writeBuf))
+			path = f.path
+			data = make([]byte, len(f.writeBuf))
 			copy(data, f.writeBuf)
-			go s.handleWrite(path, strings.TrimSpace(string(data)))
 		}
 		delete(cs.fids, fc.Fid)
 	}
 	cs.mu.Unlock()
+	if len(data) > 0 {
+		if err := s.handleWrite(path, strings.TrimSpace(string(data))); err != nil {
+			return errFcall(fc, err.Error())
+		}
+	}
 	return &plan9.Fcall{Type: plan9.Rclunk, Tag: fc.Tag}
 }
 
@@ -776,32 +782,26 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 }
 
 // handleWrite processes a fully-assembled write payload for the given path.
-// Called asynchronously from clunk.
-func (s *Server) handleWrite(path, input string) {
+// Called synchronously from clunk; prompt writes are the exception (spawned
+// as a goroutine because they block for the entire agent turn).
+func (s *Server) handleWrite(path, input string) error {
 	if input == "" {
-		return
+		return nil
 	}
 
 	if path == "/s/new" {
-		s.handleNewSession(input)
-		return
+		return s.handleNewSession(input)
 	}
 
 	// Prompt file writes go directly to disk.
 	if strings.HasPrefix(path, "/p/") {
-		if err := os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: write prompt: %v\n", err)
-		}
-		return
+		return os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644)
 	}
 
 	// Plan file writes go directly to disk.
 	if strings.HasPrefix(path, "/pl/") {
 		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
-		if err := os.WriteFile(s.planDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: write plan: %v\n", err)
-		}
-		return
+		return os.WriteFile(s.planDir+"/"+pathBase(path), []byte(input), 0644)
 	}
 
 	// Skill file writes: create skill directory and write SKILL.md.
@@ -818,27 +818,20 @@ func (s *Server) handleWrite(path, input string) {
 			dir = skills.Dirs()[0] + "/" + name
 		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: write skill: %v\n", err)
-			return
+			return err
 		}
-		if err := os.WriteFile(dir+"/SKILL.md", []byte(input), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: write skill: %v\n", err)
-		}
-		return
+		return os.WriteFile(dir+"/SKILL.md", []byte(input), 0644)
 	}
 
 	// Tool file writes go directly to disk.
 	if strings.HasPrefix(path, "/t/") {
-		if err := os.WriteFile(execute.ToolsPath()+"/"+pathBase(path), []byte(input), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: write tool: %v\n", err)
-		}
-		return
+		return os.WriteFile(execute.ToolsPath()+"/"+pathBase(path), []byte(input), 0755)
 	}
 
 	// Path format: /s/{sessid}/{file}
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 	if len(parts) != 3 || parts[0] != "s" {
-		return
+		return nil
 	}
 	sessID, fileName := parts[1], parts[2]
 
@@ -846,7 +839,7 @@ func (s *Server) handleWrite(path, input string) {
 	sess := s.sessions[sessID]
 	s.mu.RUnlock()
 	if sess == nil {
-		return
+		return fmt.Errorf("session not found: %s", sessID)
 	}
 
 	// assistantStarted tracks whether we've emitted the "assistant: " label
@@ -868,13 +861,18 @@ func (s *Server) handleWrite(path, input string) {
 
 	switch fileName {
 	case "prompt":
-		sess.core.Submit(sess.ctx, input, publish)
-		sess.mu.Lock()
-		sess.replyVers++
-		sess.mu.Unlock()
+		// prompt blocks for the entire agent turn; run async.
+		go func() {
+			sess.core.Submit(sess.ctx, input, publish)
+			sess.mu.Lock()
+			sess.replyVers++
+			sess.mu.Unlock()
+		}()
+		return nil
 
 	case "enqueue":
 		sess.core.Queue(input)
+		return nil
 
 	case "ctl":
 		switch input {
@@ -883,34 +881,44 @@ func (s *Server) handleWrite(path, input string) {
 		default:
 			sess.core.Submit(sess.ctx, "/"+input, publish)
 		}
+		return nil
 
 	case "backend":
+		if sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch backend while agent is running")
+		}
 		sess.core.Submit(sess.ctx, "/backend "+input, publish)
+		return nil
 
 	case "agent":
+		if sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch agent while agent is running")
+		}
 		sess.core.Submit(sess.ctx, "/agent "+input, publish)
+		return nil
 
 	case "model":
 		if input == "" {
-			fmt.Fprintf(os.Stderr, "olliesrv: model: empty model name\n")
-			return
+			return fmt.Errorf("empty model name")
+		}
+		if sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch model while agent is running")
 		}
 		sess.core.Submit(sess.ctx, "/model "+input, publish)
+		return nil
 
 	case "workdir":
-		if err := sess.core.SetWorkDir(input); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: workdir: %v\n", err)
-		}
+		return sess.core.SetWorkDir(input)
 	}
+
+	return nil
 }
 
 // handleNewSession parses KV pairs (one per line or space-separated) and creates a session.
-func (s *Server) handleNewSession(input string) {
+func (s *Server) handleNewSession(input string) error {
 	// Accept both newline-separated and space-separated KV pairs.
 	args := strings.Fields(input)
-	if err := s.createSession(args); err != nil {
-		fmt.Fprintf(os.Stderr, "olliesrv: new session: %v\n", err)
-	}
+	return s.createSession(args)
 }
 
 // createSession parses key=value options and starts a new agent session.
