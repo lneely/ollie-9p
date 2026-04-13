@@ -710,7 +710,7 @@ func (s *Server) readFile(path string) string {
 	case "state":
 		return sess.core.State() + "\n"
 	case "cwd":
-		return sess.core.WorkDir() + "\n"
+		return sess.core.CWD() + "\n"
 	case "usage":
 		return sess.core.Usage() + "\n"
 	case "ctxsz":
@@ -1099,11 +1099,11 @@ func (s *Server) handleWrite(path, input string) error {
 		return nil
 
 	case "cwd":
-		if err := sess.core.SetWorkDir(input); err != nil {
+		if err := sess.core.SetCWD(input); err != nil {
 			return err
 		}
 		sess.mu.Lock()
-		sess.mutableVers["cwd"].update(sess.core.WorkDir())
+		sess.mutableVers["cwd"].update(sess.core.CWD())
 		sess.mu.Unlock()
 		return nil
 	}
@@ -1126,7 +1126,7 @@ func (s *Server) createSession(args []string) error {
 	backendOverride := ""
 	modelOverride := ""
 	agentName := "default"
-	workdir := ""
+	cwd := ""
 
 	for _, arg := range args {
 		k, v, ok := strings.Cut(arg, "=")
@@ -1146,13 +1146,13 @@ func (s *Server) createSession(args []string) error {
 		case "agent":
 			agentName = v
 		case "cwd":
-			workdir = v
+			cwd = v
 		default:
 			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
 		}
 	}
 
-	if workdir == "" {
+	if cwd == "" {
 		return fmt.Errorf("cwd is required (e.g. new cwd=/path/to/project)")
 	}
 
@@ -1184,8 +1184,8 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute":   execute.Decl(workdir),
-		"file":      file.Decl(workdir),
+		"execute":   execute.Decl(cwd),
+		"file":      file.Decl(cwd),
 		"reasoning": reasoning.Decl(),
 	})
 
@@ -1202,7 +1202,7 @@ func (s *Server) createSession(args []string) error {
 	}
 
 	fallback := &filePlanBackend{dir: s.planDir}
-	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd, agent.WithFallbackPlanBackend(fallback))
 
 	// Inject per-session env vars into the execute server.
 	if srv, ok := env.Dispatcher().GetServer("execute"); ok {
@@ -1219,7 +1219,7 @@ func (s *Server) createSession(args []string) error {
 		AgentsDir:     s.agentsDir,
 		SessionsDir:   s.sessionsDir,
 		SessionID:     sessID,
-		WorkDir:       workdir,
+		CWD:           cwd,
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
@@ -1235,7 +1235,7 @@ func (s *Server) createSession(args []string) error {
 			"agent":   {last: core.AgentName()},
 			"model":   {last: core.ModelName()},
 			"usage":   {last: core.Usage()},
-			"cwd": {last: core.WorkDir()},
+			"cwd": {last: core.CWD()},
 		},
 	}
 
