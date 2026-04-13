@@ -354,6 +354,9 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if f.path != "/p" && f.path != "/pl" && f.path != "/sk" && f.path != "/t" {
 		return errFcall(fc, "create not supported")
 	}
+	if fc.Perm&plan9.DMDIR != 0 {
+		return errFcall(fc, "mkdir not supported")
+	}
 
 	newPath := pathJoin(f.path, fc.Name)
 
