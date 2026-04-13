@@ -337,7 +337,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if !ok {
 		return errFcall(fc, "bad fid")
 	}
-	if f.path != "/sk" && f.path != "/t" {
+	if f.path != "/p" && f.path != "/sk" && f.path != "/t" {
 		return errFcall(fc, "create not supported")
 	}
 
@@ -346,6 +346,11 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Actually create the file on disk so that even a no-write create
 	// (e.g. touch) produces a real file.
 	switch f.path {
+	case "/p":
+		os.MkdirAll(s.promptsDir, 0755) //nolint:errcheck
+		if err := os.WriteFile(s.promptsDir+"/"+fc.Name, nil, 0644); err != nil {
+			return errFcall(fc, err.Error())
+		}
 	case "/t":
 		dir := execute.ToolsPath()
 		os.MkdirAll(dir, 0755) //nolint:errcheck
@@ -943,7 +948,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 
 	if path == "/" {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
-		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
@@ -1049,6 +1054,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
+		} else if path == "/p" {
+			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
 		}

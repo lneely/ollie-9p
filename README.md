@@ -24,8 +24,8 @@ ollie/
       agent             r/w:   active agent name
       model             r/w:   active model name
       workdir           r/w:   working directory for tool execution and system prompt
-  sk/                   dir:   skills (r/o, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
-    <name>.md           read:  skill SKILL.md content
+  sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
+    <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
     <script>            r/w:   tool script content
 ```
