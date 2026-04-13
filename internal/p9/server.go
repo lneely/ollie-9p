@@ -877,13 +877,11 @@ func (s *Server) handleWrite(path, input string) {
 		sess.core.Queue(input)
 
 	case "ctl":
-		switch {
-		case input == "stop" || input == "interrupt":
+		switch input {
+		case "stop":
 			sess.core.Interrupt(agent.ErrInterrupted)
-		case strings.HasPrefix(input, "/"):
-			sess.core.Submit(sess.ctx, input, publish)
 		default:
-			fmt.Fprintf(os.Stderr, "olliesrv: session ctl: unknown command %q (use stop, interrupt, or /slashcmd)\n", input)
+			sess.core.Submit(sess.ctx, "/"+input, publish)
 		}
 
 	case "backend":
