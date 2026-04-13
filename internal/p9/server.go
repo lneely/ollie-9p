@@ -737,11 +737,27 @@ func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 	cs.mu.Unlock()
 	if len(data) > 0 {
-		if err := s.handleWrite(path, strings.TrimSpace(string(data))); err != nil {
+		input := strings.TrimSpace(string(data))
+		if s.isAsyncWrite(path) {
+			go s.handleWrite(path, input) //nolint:errcheck
+		} else if err := s.handleWrite(path, input); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	}
 	return &plan9.Fcall{Type: plan9.Rclunk, Tag: fc.Tag}
+}
+
+// isAsyncWrite returns true for paths where writes may block (agent turns)
+// and Rerror is not useful.
+func (s *Server) isAsyncWrite(path string) bool {
+	if !strings.HasPrefix(path, "/s/") {
+		return false
+	}
+	switch pathBase(path) {
+	case "prompt", "enqueue", "ctl":
+		return true
+	}
+	return false
 }
 
 func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
@@ -861,13 +877,10 @@ func (s *Server) handleWrite(path, input string) error {
 
 	switch fileName {
 	case "prompt":
-		// prompt blocks for the entire agent turn; run async.
-		go func() {
-			sess.core.Submit(sess.ctx, input, publish)
-			sess.mu.Lock()
-			sess.replyVers++
-			sess.mu.Unlock()
-		}()
+		sess.core.Submit(sess.ctx, input, publish)
+		sess.mu.Lock()
+		sess.replyVers++
+		sess.mu.Unlock()
 		return nil
 
 	case "enqueue":
