@@ -7,7 +7,7 @@
 //	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
 //	        new             (r/w)   read: KV template; write: create session
-//	        {session-id}/           rm to kill session
+//	        {session-id}/           rm -r to kill session
 //	            ctl         (write) session control: compact, clear, interrupt
 //	            prompt      (write) submit a prompt to the agent
 //	            enqueue     (write) queue a prompt for later execution
@@ -945,8 +945,11 @@ func (s *Server) createSession(args []string) error {
 
 	for _, arg := range args {
 		k, v, ok := strings.Cut(arg, "=")
-		if !ok || v == "" {
+		if !ok {
 			return fmt.Errorf("invalid option %q (expected key=value)", arg)
+		}
+		if v == "" {
+			continue
 		}
 		switch k {
 		case "backend":

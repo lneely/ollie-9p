@@ -13,7 +13,7 @@ ollie/
   pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
     new                 r/w:   read: KV template; write: create session
-    <session-id>/               rm to kill session
+    <session-id>/               rm -r to kill session
       prompt            write: submit a prompt to the agent
       enqueue           write: queue a prompt for later execution
       dequeue           read:  pop the next queued prompt
@@ -116,7 +116,7 @@ Writes to `backend`, `model`, and `agent` are rejected with an error when the ag
 ### Kill a session
 
 ```sh
-rm ~/mnt/ollie/s/<session-id>
+rm -r ~/mnt/ollie/s/<session-id>
 ```
 
 ## Example shell session
