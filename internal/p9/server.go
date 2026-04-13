@@ -39,6 +39,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"9fans.net/go/plan9"
 	"ollie/pkg/agent"
@@ -56,6 +57,24 @@ const (
 	QTFile = plan9.QTFILE
 )
 
+// mutableFile tracks version and last-known value for a tailable session file.
+// Qid.Vers is bumped on change so tail -f detects rewrites via stat polling.
+// On change, truncated is set to 1 so the next stat reports Length 0,
+// causing tail to detect truncation and re-read from offset 0.
+type mutableFile struct {
+	vers      uint32
+	last      string
+	truncated int32 // atomic: 1 after change, cleared by stat
+}
+
+func (m *mutableFile) update(val string) {
+	if val != m.last {
+		m.last = val
+		m.vers++
+		atomic.StoreInt32(&m.truncated, 1)
+	}
+}
+
 // session holds all state for one ollie agent session.
 type session struct {
 	mu     sync.RWMutex
@@ -69,6 +88,10 @@ type session struct {
 	chatVers uint32 // incremented on each append; used as Qid.Vers
 	// replyVers is incremented on each turn to drive Qid.Vers for polling.
 	replyVers uint32
+	// mutableVers tracks changes to tailable mutable-state files
+	// (state, backend, agent, model, usage, workdir). Bumped on change;
+	// reported via Qid.Vers in stat so tail -f detects truncation/rewrite.
+	mutableVers map[string]*mutableFile
 }
 
 
@@ -80,6 +103,17 @@ func (sess *session) appendChat(data []byte) {
 	sess.mu.Lock()
 	sess.chatLog = append(sess.chatLog, data...)
 	sess.chatVers++
+	sess.mu.Unlock()
+}
+
+// trackMutable snapshots state and usage into their version trackers.
+// Called from the publish callback after each event.
+func (sess *session) trackMutable() {
+	state := sess.core.State()
+	usage := sess.core.Usage()
+	sess.mu.Lock()
+	sess.mutableVers["state"].update(state)
+	sess.mutableVers["usage"].update(usage)
 	sess.mu.Unlock()
 }
 
@@ -465,7 +499,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// s/new returns the session creation template.
 	if path == "/s/new" {
-		content := []byte("workdir=\nbackend=\nmodel=\nagent=\n")
+		content := []byte("name=\nworkdir=\nbackend=\nmodel=\nagent=\n")
 		return s.readSlice(fc, content)
 	}
 
@@ -988,11 +1022,13 @@ func (s *Server) handleWrite(path, input string) error {
 			}
 		}
 		sess.appendChat(formatEvent(ev))
+		sess.trackMutable()
 	}
 
 	switch fileName {
 	case "prompt":
 		sess.core.Submit(sess.ctx, input, publish)
+		sess.trackMutable()
 		sess.mu.Lock()
 		sess.replyVers++
 		sess.mu.Unlock()
@@ -1024,6 +1060,10 @@ func (s *Server) handleWrite(path, input string) error {
 			return fmt.Errorf("cannot switch backend while agent is running")
 		}
 		sess.core.Submit(sess.ctx, "/backend "+input, publish)
+		sess.mu.Lock()
+		sess.mutableVers["backend"].update(sess.core.BackendName())
+		sess.mutableVers["model"].update(sess.core.ModelName())
+		sess.mu.Unlock()
 		return nil
 
 	case "agent":
@@ -1031,6 +1071,9 @@ func (s *Server) handleWrite(path, input string) error {
 			return fmt.Errorf("cannot switch agent while agent is running")
 		}
 		sess.core.Submit(sess.ctx, "/agent "+input, publish)
+		sess.mu.Lock()
+		sess.mutableVers["agent"].update(sess.core.AgentName())
+		sess.mu.Unlock()
 		return nil
 
 	case "model":
@@ -1041,10 +1084,19 @@ func (s *Server) handleWrite(path, input string) error {
 			return fmt.Errorf("cannot switch model while agent is running")
 		}
 		sess.core.Submit(sess.ctx, "/model "+input, publish)
+		sess.mu.Lock()
+		sess.mutableVers["model"].update(sess.core.ModelName())
+		sess.mu.Unlock()
 		return nil
 
 	case "workdir":
-		return sess.core.SetWorkDir(input)
+		if err := sess.core.SetWorkDir(input); err != nil {
+			return err
+		}
+		sess.mu.Lock()
+		sess.mutableVers["workdir"].update(sess.core.WorkDir())
+		sess.mu.Unlock()
+		return nil
 	}
 
 	return nil
@@ -1058,9 +1110,10 @@ func (s *Server) handleNewSession(input string) error {
 }
 
 // createSession parses key=value options and starts a new agent session.
-// Recognised keys: backend, model, agent, workdir. workdir is required.
+// Recognised keys: name, backend, model, agent, workdir. workdir is required.
 // Example: new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent
 func (s *Server) createSession(args []string) error {
+	name := ""
 	backendOverride := ""
 	modelOverride := ""
 	agentName := "default"
@@ -1075,6 +1128,8 @@ func (s *Server) createSession(args []string) error {
 			continue
 		}
 		switch k {
+		case "name":
+			name = v
 		case "backend":
 			backendOverride = v
 		case "model":
@@ -1084,7 +1139,7 @@ func (s *Server) createSession(args []string) error {
 		case "workdir":
 			workdir = v
 		default:
-			return fmt.Errorf("unknown option %q (valid: backend, model, agent, workdir)", k)
+			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, workdir)", k)
 		}
 	}
 
@@ -1125,7 +1180,18 @@ func (s *Server) createSession(args []string) error {
 		"reasoning": reasoning.Decl(),
 	})
 
-	sessID := agent.NewSessionID()
+	sessID := name
+	if sessID == "" {
+		sessID = agent.NewSessionID()
+	}
+
+	s.mu.RLock()
+	_, exists := s.sessions[sessID]
+	s.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("session already exists: %s", sessID)
+	}
+
 	fallback := &filePlanBackend{dir: s.planDir}
 	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
 
@@ -1154,6 +1220,14 @@ func (s *Server) createSession(args []string) error {
 		core:   core,
 		ctx:    ctx,
 		cancel: cancel,
+		mutableVers: map[string]*mutableFile{
+			"state":   {last: core.State()},
+			"backend": {last: core.BackendName()},
+			"agent":   {last: core.AgentName()},
+			"model":   {last: core.ModelName()},
+			"usage":   {last: core.Usage()},
+			"workdir": {last: core.WorkDir()},
+		},
 	}
 
 	s.mu.Lock()
@@ -1401,26 +1475,41 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		Muid: "ollie",
 	}
 
-	// For chat/reply files, report actual size and Qid version so that
-	// polling tools (tail -f) can detect growth via stat.
+	// For chat/reply and tailable mutable files, report actual size and
+	// Qid version so polling tools (tail -f) can detect changes via stat.
 	// Path format: /s/{sessid}/{file}
-	if base == "chat" || base == "reply" {
+	if strings.HasPrefix(path, "/s/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 && parts[0] == "s" {
 			s.mu.RLock()
 			sess := s.sessions[parts[1]]
 			s.mu.RUnlock()
 			if sess != nil {
-				if base == "chat" {
+				switch base {
+				case "chat":
 					sess.mu.RLock()
 					dir.Length = uint64(len(sess.chatLog))
 					dir.Qid.Vers = sess.chatVers
 					sess.mu.RUnlock()
-				} else {
-					dir.Length = uint64(len(sess.core.Reply()))
+				case "reply":
 					sess.mu.RLock()
+					dir.Length = uint64(len(sess.core.Reply()))
 					dir.Qid.Vers = sess.replyVers
 					sess.mu.RUnlock()
+				default:
+					sess.mu.RLock()
+					mf := sess.mutableVers[base]
+					if mf != nil {
+						dir.Qid.Vers = mf.vers
+					}
+					sess.mu.RUnlock()
+					if mf != nil && atomic.CompareAndSwapInt32(&mf.truncated, 1, 0) {
+						// Report size 0 once so tail -f detects truncation.
+						dir.Length = 0
+					} else {
+						content := s.readFile(path)
+						dir.Length = uint64(len(content))
+					}
 				}
 			}
 		}
