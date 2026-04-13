@@ -754,7 +754,7 @@ func (s *Server) isAsyncWrite(path string) bool {
 		return false
 	}
 	switch pathBase(path) {
-	case "prompt", "enqueue", "ctl":
+	case "prompt", "enqueue":
 		return true
 	}
 	return false
@@ -891,10 +891,17 @@ func (s *Server) handleWrite(path, input string) error {
 		switch input {
 		case "stop":
 			sess.core.Interrupt(agent.ErrInterrupted)
+			return nil
 		default:
+			// Forward as slash command. Submit handles it synchronously
+			// for recognized commands; unrecognized ones fall through to
+			// start an agent turn, which we must not do from ctl.
+			if sess.core.IsRunning() {
+				return fmt.Errorf("agent is running")
+			}
 			sess.core.Submit(sess.ctx, "/"+input, publish)
+			return nil
 		}
-		return nil
 
 	case "backend":
 		if sess.core.IsRunning() {
