@@ -8,18 +8,19 @@ The goal is integration, not self-sufficiency. Rather than providing orchestrati
 
 ```
 ollie/
-  ctl                   write: "new [backend=x] [model=x] [agent=x]" | "kill <session-id>"
   p/                    dir:   prompt templates (r/w, backed by ~/.config/ollie/prompts/)
     SYSTEM_PROMPT.md    r/w:   the system prompt template
+  pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
-    <session-id>/
-      prompt            write: submit a prompt to the agent (clears reply)
+    new                 r/w:   read: KV template; write: create session
+    <session-id>/               rm to kill session
+      prompt            write: submit a prompt to the agent
       enqueue           write: queue a prompt for later execution
       dequeue           read:  pop the next queued prompt
       chat              read:  cumulative conversation history
       reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)
-      ctl               write: stop | interrupt | /<slash-command>
+      ctl               write: stop | <command>
       backend           r/w:   active backend name
       agent             r/w:   active agent name
       model             r/w:   active model name
@@ -58,16 +59,14 @@ The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`)
 ### Create a session
 
 ```sh
-echo "new workdir=/home/lkn/src/myproject" > ~/mnt/ollie/ctl
-echo "new workdir=/home/lkn/src/myproject backend=ollama" > ~/mnt/ollie/ctl
-echo "new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b" > ~/mnt/ollie/ctl
-echo "new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent" > ~/mnt/ollie/ctl
+cat ~/mnt/ollie/s/new                # show required/optional KV pairs
+echo "workdir=/home/lkn/src/myproject" > ~/mnt/ollie/s/new
+echo "workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b" > ~/mnt/ollie/s/new
 ```
 
-All options are optional and can be specified in any order. Unrecognised keys are rejected.
-Valid keys: `backend`, `model`, `agent`, `workdir`.
+Valid keys: `workdir` (required), `backend`, `model`, `agent`.
 
-A new session directory appears under `s/`, named by Unix nanosecond timestamp + random suffix (e.g. `1744276689123456789-2b986c`).
+A new session directory appears under `s/`.
 
 ### Send a prompt
 
@@ -84,14 +83,7 @@ cat ~/mnt/ollie/s/<session-id>/chat             # full history snapshot
 tail -f ~/mnt/ollie/s/<session-id>/chat         # follow output as it arrives
 ```
 
-The `chat` file is an append-only log of the full conversation. Format:
-
-```
-user: <prompt>
-assistant: <response>
--> <tool>(<args>)
-= <result>
-```
+The `chat` file is an append-only log of the full conversation.
 
 ### Check agent state
 
@@ -104,12 +96,12 @@ cat ~/mnt/ollie/s/<session-id>/state
 
 ```sh
 echo stop > ~/mnt/ollie/s/<session-id>/ctl          # interrupt the current turn
-echo /compact > ~/mnt/ollie/s/<session-id>/ctl      # summarize context
-echo /clear > ~/mnt/ollie/s/<session-id>/ctl        # clear session history
-echo /model qwen3:8b > ~/mnt/ollie/s/<session-id>/ctl
+echo compact > ~/mnt/ollie/s/<session-id>/ctl        # summarize context
+echo clear > ~/mnt/ollie/s/<session-id>/ctl          # clear session history
+echo "model qwen3:8b" > ~/mnt/ollie/s/<session-id>/ctl
 ```
 
-`ctl` accepts `stop`/`interrupt` or any `/slash-command` supported by the agent. Arbitrary text is rejected.
+`ctl` accepts `stop` or any command supported by the agent (the `/` prefix is added automatically).
 
 ### Switch backend, model, or agent
 
@@ -119,17 +111,20 @@ echo qwen3:8b > ~/mnt/ollie/s/<session-id>/model
 echo myagent > ~/mnt/ollie/s/<session-id>/agent
 ```
 
+Writes to `backend`, `model`, and `agent` are rejected with an error when the agent is not idle. Writes via `ctl` are asynchronous and cannot return errors; if the agent is running, the command is silently rejected. Check `state` to confirm the change took effect.
+
 ### Kill a session
 
 ```sh
-echo "kill <session-id>" > ~/mnt/ollie/ctl
+rm ~/mnt/ollie/s/<session-id>
 ```
 
 ## Example shell session
 
 ```sh
-$ echo "new workdir=/home/lkn/src/ollie" > ~/mnt/ollie/ctl
+$ echo "workdir=/home/lkn/src/ollie" > ~/mnt/ollie/s/new
 $ ls ~/mnt/ollie/s/
+new
 1744276689123456789-2b986c
 $ cd ~/mnt/ollie/s/1744276689123456789-2b986c
 $ tail -f chat &
@@ -143,4 +138,3 @@ assistant: The Go source files are: core.go, loop.go, ...
 $ cat state
 idle
 ```
-
