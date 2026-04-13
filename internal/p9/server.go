@@ -3,22 +3,20 @@
 // Filesystem layout:
 //
 //	ollie/
-//	    ctl                 (write) create/destroy sessions
-//	                                "new [backend] [agent]" creates a session
-//	                                "kill <session-id>" destroys a session
-//	    s/                  (dir)   session directory; one entry per active session,
-//	                                sorted lexicographically by session ID (= creation
-//	                                order, since IDs are unix-nanosecond timestamps).
-//	        {session-id}/
+//	    p/                  (dir)   prompt templates
+//	    pl/                 (dir)   plans
+//	    s/                  (dir)   session directory
+//	        new             (r/w)   read: KV template; write: create session
+//	        {session-id}/           rm to kill session
 //	            ctl         (write) session control: compact, clear, interrupt
 //	            prompt      (write) submit a prompt to the agent
 //	            enqueue     (write) queue a prompt for later execution
 //	            dequeue     (read)  pop the next queued prompt
-//	            chat        (read)  cumulative chat history; grows as conversation
-//	                                progresses — use cat for a snapshot, tail -f
-//	                                to follow new output.
+//	            chat        (read)  cumulative chat history
 //	            backend     (r/w)   read/write the active backend name
 //	            agent       (r/w)   read/write the active agent name
+//	    sk/                 (dir)   skills
+//	    t/                  (dir)   tool scripts
 package p9
 
 import (
@@ -194,10 +192,10 @@ func (s *Server) pathType(path string) string {
 	trimmed := strings.TrimPrefix(path, "/")
 	parts := strings.SplitN(trimmed, "/", 3)
 	switch {
-	case len(parts) == 1 && parts[0] == "ctl":
-		return "file"
 	case len(parts) == 1 && parts[0] == "s":
 		return "dir"
+	case len(parts) == 2 && parts[0] == "s" && parts[1] == "new":
+		return "file"
 	case len(parts) == 1 && parts[0] == "p":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "pl":
@@ -420,6 +418,21 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return s.readReply(fc, path)
 	case "dequeue":
 		return s.readDequeue(fc, path)
+	}
+
+	// s/new returns the session creation template.
+	if path == "/s/new" {
+		content := []byte("workdir=\nbackend=\nmodel=\nagent=\n")
+		var data []byte
+		off := int(fc.Offset)
+		if off < len(content) {
+			end := off + int(fc.Count)
+			if end > len(content) {
+				end = len(content)
+			}
+			data = content[off:end]
+		}
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
 	// Prompt files are served from disk.
@@ -748,6 +761,8 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 	case strings.HasPrefix(path, "/t/"):
 		err = os.Remove(execute.ToolsPath() + "/" + pathBase(path))
+	case strings.HasPrefix(path, "/s/") && path != "/s/new":
+		s.killSession(pathBase(path))
 	default:
 		return errFcall(fc, "remove not supported")
 	}
@@ -764,8 +779,8 @@ func (s *Server) handleWrite(path, input string) {
 		return
 	}
 
-	if path == "/ctl" {
-		s.handleRootCtl(input)
+	if path == "/s/new" {
+		s.handleNewSession(input)
 		return
 	}
 
@@ -888,24 +903,12 @@ func (s *Server) handleWrite(path, input string) {
 	}
 }
 
-func (s *Server) handleRootCtl(input string) {
-	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return
-	}
-	switch parts[0] {
-	case "new":
-		if err := s.createSession(parts[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "olliesrv: new session: %v\n", err)
-		}
-	case "kill":
-		if len(parts) < 2 {
-			fmt.Fprintf(os.Stderr, "olliesrv: ctl: kill requires a session id\n")
-			return
-		}
-		s.killSession(parts[1])
-	default:
-		fmt.Fprintf(os.Stderr, "olliesrv: ctl: unknown command %q (use: new [backend] [agent], kill <id>)\n", parts[0])
+// handleNewSession parses KV pairs (one per line or space-separated) and creates a session.
+func (s *Server) handleNewSession(input string) {
+	// Accept both newline-separated and space-separated KV pairs.
+	args := strings.Fields(input)
+	if err := s.createSession(args); err != nil {
+		fmt.Fprintf(os.Stderr, "olliesrv: new session: %v\n", err)
 	}
 }
 
@@ -1076,7 +1079,6 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 	}
 
 	if path == "/" {
-		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
@@ -1114,6 +1116,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			}
 		}
 	} else if path == "/s" {
+		dirs = append(dirs, makeDir("new", "/s/new", false, 0666))
 		s.mu.RLock()
 		for id := range s.sessions {
 			dirs = append(dirs, makeDir(id, "/s/"+id, true, plan9.DMDIR|0555))
@@ -1211,7 +1214,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
 		default:
-			if strings.HasPrefix(path, "/p/") {
+			if path == "/s/new" {
+				mode = 0666
+			} else if strings.HasPrefix(path, "/p/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/pl/") {
 				mode = 0666
