@@ -26,7 +26,7 @@ ollie/
       workdir           r/w:   working directory for tool execution and system prompt
   sk/                   dir:   skills (r/o, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           read:  skill SKILL.md content
-  t/                    dir:   tool scripts (r/w, backed by ~/.local/share/ollie/tools/)
+  t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
     <script>            r/w:   tool script content
 ```
 

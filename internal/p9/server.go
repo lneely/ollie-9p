@@ -140,7 +140,7 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case plan9.Topen:
 		return s.open(cs, fc)
 	case plan9.Tcreate:
-		return errFcall(fc, "create not supported")
+		return s.create(cs, fc)
 	case plan9.Tread:
 		return s.read(cs, fc)
 	case plan9.Twrite:
@@ -327,6 +327,47 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	f.mode = fc.Mode
 	return &plan9.Fcall{Type: plan9.Ropen, Tag: fc.Tag, Qid: f.qid}
+}
+
+func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	f, ok := cs.fids[fc.Fid]
+	if !ok {
+		return errFcall(fc, "bad fid")
+	}
+	if f.path != "/sk" && f.path != "/t" {
+		return errFcall(fc, "create not supported")
+	}
+
+	newPath := pathJoin(f.path, fc.Name)
+
+	// Actually create the file on disk so that even a no-write create
+	// (e.g. touch) produces a real file.
+	switch f.path {
+	case "/t":
+		dir := execute.ToolsPath()
+		os.MkdirAll(dir, 0755) //nolint:errcheck
+		if err := os.WriteFile(dir+"/"+fc.Name, nil, 0755); err != nil {
+			return errFcall(fc, err.Error())
+		}
+	case "/sk":
+		name := strings.TrimSuffix(fc.Name, ".md")
+		dir := skills.Dirs()[0] + "/" + name
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		if err := os.WriteFile(dir+"/SKILL.md", nil, 0644); err != nil {
+			return errFcall(fc, err.Error())
+		}
+	}
+
+	qid := plan9.Qid{Path: qidPath(newPath)}
+	f.path = newPath
+	f.qid = qid
+	f.mode = fc.Mode
+	return &plan9.Fcall{Type: plan9.Rcreate, Tag: fc.Tag, Qid: qid}
 }
 
 func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
@@ -618,6 +659,29 @@ func (s *Server) handleWrite(path, input string) {
 		return
 	}
 
+	// Skill file writes: create skill directory and write SKILL.md.
+	if strings.HasPrefix(path, "/sk/") {
+		name := strings.TrimSuffix(pathBase(path), ".md")
+		dir := ""
+		for _, m := range skills.List() {
+			if m.Name == name {
+				dir = m.Dir
+				break
+			}
+		}
+		if dir == "" {
+			dir = skills.Dirs()[0] + "/" + name
+		}
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: write skill: %v\n", err)
+			return
+		}
+		if err := os.WriteFile(dir+"/SKILL.md", []byte(input), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: write skill: %v\n", err)
+		}
+		return
+	}
+
 	// Tool file writes go directly to disk.
 	if strings.HasPrefix(path, "/t/") {
 		if err := os.WriteFile(execute.ToolsPath()+"/"+pathBase(path), []byte(input), 0755); err != nil {
@@ -882,7 +946,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
-		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0555))
+		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
 	} else if path == "/p" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
@@ -893,13 +957,13 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 	} else if path == "/sk" {
 		for _, m := range skills.List() {
 			name := m.Name + ".md"
-			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0444))
+			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0666))
 		}
 	} else if path == "/t" {
 		entries, _ := os.ReadDir(execute.ToolsPath())
 		for _, e := range entries {
 			if !e.IsDir() {
-				dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, 0666))
+				dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, 0777))
 			}
 		}
 	} else if path == "/s" {
@@ -983,7 +1047,11 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	var mode plan9.Perm
 	if isDir {
 		qid.Type = QTDir
-		mode = plan9.DMDIR | 0555
+		if path == "/t" {
+			mode = plan9.DMDIR | 0777
+		} else {
+			mode = plan9.DMDIR | 0555
+		}
 	} else {
 		switch base {
 		case "ctl", "prompt", "enqueue":
@@ -996,9 +1064,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			if strings.HasPrefix(path, "/p/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/sk/") {
-				mode = 0444
-			} else if strings.HasPrefix(path, "/t/") {
 				mode = 0666
+			} else if strings.HasPrefix(path, "/t/") {
+				mode = 0777
 			} else {
 				mode = 0444
 			}
