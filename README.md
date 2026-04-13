@@ -24,6 +24,8 @@ ollie/
       agent             r/w:   active agent name
       model             r/w:   active model name
       workdir           r/w:   working directory for tool execution and system prompt
+      usage             read:  billed token counts (input, output, requests)
+      ctxsz             read:  estimated context size vs context window
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)

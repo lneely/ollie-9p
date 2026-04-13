@@ -222,7 +222,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "workdir", "usage":
+		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "workdir", "usage", "ctxsz":
 			return "file"
 		}
 	}
@@ -586,6 +586,8 @@ func (s *Server) readFile(path string) string {
 		return sess.core.WorkDir() + "\n"
 	case "usage":
 		return sess.core.Usage() + "\n"
+	case "ctxsz":
+		return sess.core.CtxSz() + "\n"
 	case "models":
 		return sess.core.ListModels() + "\n"
 	case "mcp":
@@ -997,6 +999,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"model", 0666},
 			{"workdir", 0666},
 			{"usage", 0444},
+			{"ctxsz", 0444},
 			{"models", 0444},
 			{"mcp", 0444},
 		}
@@ -1063,7 +1066,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt", "enqueue":
 			mode = 0200
-		case "chat", "reply", "state", "usage", "models", "mcp", "dequeue":
+		case "chat", "reply", "state", "usage", "ctxsz", "models", "mcp", "dequeue":
 			mode = 0444
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
