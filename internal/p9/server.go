@@ -7,7 +7,7 @@
 //	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
 //	        new             (r/w)   read: KV template; write: create session
-//	        {session-id}/           rm -r to kill session
+//	        {session-id}/           rm -r to kill session; mv to rename
 //	            ctl         (write) session control: compact, clear, interrupt
 //	            prompt      (write) submit a prompt to the agent
 //	            enqueue     (write) queue a prompt for later execution
@@ -90,6 +90,7 @@ type connState struct {
 type Server struct {
 	mu          sync.RWMutex
 	sessions    map[string]*session
+	conns       []*connState
 	agentsDir   string
 	sessionsDir string
 	promptsDir  string
@@ -120,6 +121,19 @@ func defaultPlanDir() string {
 func (s *Server) Serve(conn net.Conn) {
 	defer conn.Close()
 	cs := &connState{fids: make(map[uint32]*fid)}
+	s.mu.Lock()
+	s.conns = append(s.conns, cs)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		for i, c := range s.conns {
+			if c == cs {
+				s.conns = append(s.conns[:i], s.conns[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}()
 	for {
 		fc, err := plan9.ReadFcall(conn)
 		if err != nil {
@@ -693,11 +707,6 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return errFcall(fc, "bad fid")
 	}
 
-	// Only /pl files support rename via wstat.
-	if !strings.HasPrefix(f.path, "/pl/") {
-		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
-	}
-
 	// Parse the new Dir from the stat bytes.
 	newDir, err := plan9.UnmarshalDir(fc.Stat)
 	if err != nil {
@@ -705,9 +714,13 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
 	}
 
-	// If the name changed, rename the file on disk.
 	oldName := pathBase(f.path)
-	if newDir.Name != "" && newDir.Name != oldName {
+	if newDir.Name == "" || newDir.Name == oldName {
+		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+	}
+
+	switch {
+	case strings.HasPrefix(f.path, "/pl/"):
 		oldPath := s.planDir + "/" + oldName
 		newPath := s.planDir + "/" + newDir.Name
 		if err := os.Rename(oldPath, newPath); err != nil {
@@ -717,9 +730,67 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		f.path = "/pl/" + newDir.Name
 		f.qid.Path = qidPath(f.path)
 		cs.mu.Unlock()
+
+	case strings.HasPrefix(f.path, "/s/") && f.path != "/s/new":
+		// Session directory rename: /s/{old} -> /s/{new}
+		parts := strings.SplitN(strings.TrimPrefix(f.path, "/"), "/", 3)
+		if len(parts) != 2 || parts[0] != "s" {
+			return errFcall(fc, "rename not supported")
+		}
+		if err := s.renameSession(parts[1], newDir.Name); err != nil {
+			return errFcall(fc, err.Error())
+		}
+
+	default:
+		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
 	}
 
 	return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+}
+
+// renameSession re-keys a session in the sessions map, updates the core's
+// session ID, and rewrites fid paths across all connections.
+// Caller must hold NO locks on s.mu (this method acquires it).
+func (s *Server) renameSession(oldID, newID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sess, ok := s.sessions[oldID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", oldID)
+	}
+	if _, exists := s.sessions[newID]; exists {
+		return fmt.Errorf("session already exists: %s", newID)
+	}
+	if sess.core.IsRunning() {
+		return fmt.Errorf("cannot rename while agent is running")
+	}
+
+	if err := sess.core.SetSessionID(newID); err != nil {
+		return err
+	}
+
+	sess.id = newID
+	s.sessions[newID] = sess
+	delete(s.sessions, oldID)
+
+	// Rewrite fid paths across all connections.
+	oldPrefix := "/s/" + oldID
+	newPrefix := "/s/" + newID
+	for _, c := range s.conns {
+		c.mu.Lock()
+		for _, f := range c.fids {
+			if f.path == oldPrefix || strings.HasPrefix(f.path, oldPrefix+"/") {
+				f.path = newPrefix + f.path[len(oldPrefix):]
+				f.qid.Path = qidPath(f.path)
+			}
+		}
+		c.mu.Unlock()
+	}
+
+	sess.appendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
+	fmt.Fprintf(os.Stderr, "olliesrv: renamed session %s -> %s\n", oldID, newID)
+	return nil
 }
 
 func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
@@ -888,9 +959,17 @@ func (s *Server) handleWrite(path, input string) error {
 		return nil
 
 	case "ctl":
-		switch input {
-		case "stop":
+		switch {
+		case input == "stop":
 			sess.core.Interrupt(agent.ErrInterrupted)
+		case input == "kill":
+			s.killSession(sessID)
+		case strings.HasPrefix(input, "rn "):
+			if name := strings.TrimSpace(input[3:]); name != "" {
+				if err := s.renameSession(sessID, name); err != nil {
+					fmt.Fprintf(os.Stderr, "olliesrv: rename: %v\n", err)
+				}
+			}
 		default:
 			sess.core.Submit(sess.ctx, "/"+input, publish)
 		}

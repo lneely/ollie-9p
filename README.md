@@ -13,7 +13,7 @@ ollie/
   pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
     new                 r/w:   read: KV template; write: create session
-    <session-id>/               rm -r to kill session
+    <session-id>/               rm -r to kill session; mv to rename
       prompt            write: submit a prompt to the agent
       enqueue           write: queue a prompt for later execution
       dequeue           read:  pop the next queued prompt
@@ -98,10 +98,12 @@ cat ~/mnt/ollie/s/<session-id>/state
 echo stop > ~/mnt/ollie/s/<session-id>/ctl          # interrupt the current turn
 echo compact > ~/mnt/ollie/s/<session-id>/ctl        # summarize context
 echo clear > ~/mnt/ollie/s/<session-id>/ctl          # clear session history
+echo kill > ~/mnt/ollie/s/<session-id>/ctl           # kill session
+echo "rn my-name" > ~/mnt/ollie/s/<session-id>/ctl   # rename session
 echo "model qwen3:8b" > ~/mnt/ollie/s/<session-id>/ctl
 ```
 
-`ctl` accepts `stop` or any command supported by the agent (the `/` prefix is added automatically).
+`ctl` accepts `stop`, `kill`, `rn <name>`, or any command supported by the agent (the `/` prefix is added automatically).
 
 ### Switch backend, model, or agent
 
@@ -118,6 +120,14 @@ Writes to `backend`, `model`, and `agent` are rejected with an error when the ag
 ```sh
 rm -r ~/mnt/ollie/s/<session-id>
 ```
+
+### Rename a session
+
+```sh
+mv ~/mnt/ollie/s/<session-id> ~/mnt/ollie/s/my-friendly-name
+```
+
+Rename is rejected if the agent is running or the target name already exists. All open file handles into the session are updated automatically.
 
 ## Example shell session
 
@@ -137,4 +147,8 @@ pkg/agent/loop.go
 assistant: The Go source files are: core.go, loop.go, ...
 $ cat state
 idle
+$ mv ~/mnt/ollie/s/1744276689123456789-2b986c ~/mnt/ollie/s/ollie-demo
+$ ls ~/mnt/ollie/s/
+new
+ollie-demo
 ```
