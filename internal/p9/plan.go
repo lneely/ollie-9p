@@ -72,7 +72,7 @@ func (b *filePlanBackend) CreatePlan(_ context.Context, goal string, steps []too
 	}
 
 	msg := fmt.Sprintf(
-		"Plan saved to pl/%s (%d steps). Rename __todo → __wip when you start, mark items [x] as you complete them, then rename __wip → __done when the goal is realized.",
+		"Plan saved to pl/%s (%d steps). Rename __todo → __wip when you start, mark items [x] as you complete them (e.g. sed -i 's/- \\[ \\] Step title/- [x] Step title/' planfile.md), then rename __wip → __done when the goal is realized.",
 		filename, len(steps),
 	)
 	return ids, msg, nil
