@@ -2,10 +2,12 @@ package p9
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"ollie/pkg/tools"
 )
@@ -14,10 +16,9 @@ import (
 // to the planning directory. The file persists across crashes so another
 // session can pick up where the previous one left off.
 //
-// Filename: {sid}--{goal-slugified}__wip.md
+// Filename: YYYYMMDDThhmmss_{uid8}--{goal-slugified}__todo.md
 type filePlanBackend struct {
 	dir string // planning directory path
-	sid string // session ID (used in filename)
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
@@ -43,7 +44,10 @@ func (b *filePlanBackend) CreatePlan(_ context.Context, goal string, steps []too
 	}
 
 	slug := slugify(goal)
-	filename := b.sid + "--" + slug + "__wip.md"
+	uid := make([]byte, 4)
+	rand.Read(uid) //nolint:errcheck
+	ts := time.Now().Format("20060102T150405")
+	filename := ts + "_" + fmt.Sprintf("%08x", uid) + "--" + slug + "__todo.md"
 
 	var md strings.Builder
 	fmt.Fprintf(&md, "# %s\n\n", goal)
@@ -68,7 +72,7 @@ func (b *filePlanBackend) CreatePlan(_ context.Context, goal string, steps []too
 	}
 
 	msg := fmt.Sprintf(
-		"Plan saved to pl/%s (%d steps). Work through the checklist — mark items [x] as you complete them.",
+		"Plan saved to pl/%s (%d steps). Rename __todo → __wip when you start, mark items [x] as you complete them, then rename __wip → __done when the goal is realized.",
 		filename, len(steps),
 	)
 	return ids, msg, nil

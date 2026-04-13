@@ -940,7 +940,7 @@ func (s *Server) createSession(args []string) error {
 	})
 
 	sessID := agent.NewSessionID()
-	fallback := &filePlanBackend{dir: s.planDir, sid: sessID}
+	fallback := &filePlanBackend{dir: s.planDir}
 	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
 
 	// Inject per-session env vars into the execute server.
