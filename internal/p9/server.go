@@ -166,7 +166,7 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case plan9.Tclunk:
 		return s.clunk(cs, fc)
 	case plan9.Tremove:
-		return errFcall(fc, "remove not supported")
+		return s.remove(cs, fc)
 	default:
 		return errFcall(fc, "unsupported operation")
 	}
@@ -720,6 +720,41 @@ func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 	cs.mu.Unlock()
 	return &plan9.Fcall{Type: plan9.Rclunk, Tag: fc.Tag}
+}
+
+func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
+	cs.mu.Lock()
+	f, ok := cs.fids[fc.Fid]
+	if ok {
+		delete(cs.fids, fc.Fid)
+	}
+	cs.mu.Unlock()
+	if !ok {
+		return errFcall(fc, "bad fid")
+	}
+
+	path := f.path
+	var err error
+	switch {
+	case strings.HasPrefix(path, "/p/"):
+		err = os.Remove(s.promptsDir + "/" + pathBase(path))
+	case strings.HasPrefix(path, "/sk/"):
+		name := strings.TrimSuffix(pathBase(path), ".md")
+		for _, m := range skills.List() {
+			if m.Name == name {
+				err = os.RemoveAll(m.Dir)
+				break
+			}
+		}
+	case strings.HasPrefix(path, "/t/"):
+		err = os.Remove(execute.ToolsPath() + "/" + pathBase(path))
+	default:
+		return errFcall(fc, "remove not supported")
+	}
+	if err != nil {
+		return errFcall(fc, err.Error())
+	}
+	return &plan9.Fcall{Type: plan9.Rremove, Tag: fc.Tag}
 }
 
 // handleWrite processes a fully-assembled write payload for the given path.
