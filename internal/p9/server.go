@@ -23,7 +23,7 @@
 //	            model       (r/w)   active model name
 //	            models      (read)  available models from the backend
 //	            mcp         (read)  MCP server list
-//	            workdir     (r/w)   working directory
+//	            cwd         (r/w)   working directory
 //	            usage       (read)  token counts
 //	            ctxsz       (read)  context size vs window
 //	    sk/                 (dir)   skills
@@ -89,7 +89,7 @@ type session struct {
 	// replyVers is incremented on each turn to drive Qid.Vers for polling.
 	replyVers uint32
 	// mutableVers tracks changes to tailable mutable-state files
-	// (state, backend, agent, model, usage, workdir). Bumped on change;
+	// (state, backend, agent, model, usage, cwd). Bumped on change;
 	// reported via Qid.Vers in stat so tail -f detects truncation/rewrite.
 	mutableVers map[string]*mutableFile
 }
@@ -305,7 +305,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "workdir", "usage", "ctxsz":
+		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "cwd", "usage", "ctxsz":
 			return "file"
 		}
 	}
@@ -499,7 +499,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// s/new returns the session creation template.
 	if path == "/s/new" {
-		content := []byte("name=\nworkdir=\nbackend=\nmodel=\nagent=\n")
+		content := []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n")
 		return s.readSlice(fc, content)
 	}
 
@@ -709,7 +709,7 @@ func (s *Server) readFile(path string) string {
 		return sess.core.ModelName() + "\n"
 	case "state":
 		return sess.core.State() + "\n"
-	case "workdir":
+	case "cwd":
 		return sess.core.WorkDir() + "\n"
 	case "usage":
 		return sess.core.Usage() + "\n"
@@ -1098,12 +1098,12 @@ func (s *Server) handleWrite(path, input string) error {
 		sess.mu.Unlock()
 		return nil
 
-	case "workdir":
+	case "cwd":
 		if err := sess.core.SetWorkDir(input); err != nil {
 			return err
 		}
 		sess.mu.Lock()
-		sess.mutableVers["workdir"].update(sess.core.WorkDir())
+		sess.mutableVers["cwd"].update(sess.core.WorkDir())
 		sess.mu.Unlock()
 		return nil
 	}
@@ -1119,8 +1119,8 @@ func (s *Server) handleNewSession(input string) error {
 }
 
 // createSession parses key=value options and starts a new agent session.
-// Recognised keys: name, backend, model, agent, workdir. workdir is required.
-// Example: new workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent
+// Recognised keys: name, backend, model, agent, cwd. cwd is required.
+// Example: new cwd=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent
 func (s *Server) createSession(args []string) error {
 	name := ""
 	backendOverride := ""
@@ -1145,15 +1145,15 @@ func (s *Server) createSession(args []string) error {
 			modelOverride = v
 		case "agent":
 			agentName = v
-		case "workdir":
+		case "cwd":
 			workdir = v
 		default:
-			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, workdir)", k)
+			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
 		}
 	}
 
 	if workdir == "" {
-		return fmt.Errorf("workdir is required (e.g. new workdir=/path/to/project)")
+		return fmt.Errorf("cwd is required (e.g. new cwd=/path/to/project)")
 	}
 
 	var (
@@ -1235,7 +1235,7 @@ func (s *Server) createSession(args []string) error {
 			"agent":   {last: core.AgentName()},
 			"model":   {last: core.ModelName()},
 			"usage":   {last: core.Usage()},
-			"workdir": {last: core.WorkDir()},
+			"cwd": {last: core.WorkDir()},
 		},
 	}
 
@@ -1381,7 +1381,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"backend", 0666},
 			{"agent", 0666},
 			{"model", 0666},
-			{"workdir", 0666},
+			{"cwd", 0666},
 			{"usage", 0444},
 			{"ctxsz", 0444},
 			{"models", 0444},
@@ -1452,7 +1452,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0200
 		case "chat", "reply", "state", "usage", "ctxsz", "models", "mcp", "dequeue":
 			mode = 0444
-		case "backend", "agent", "model", "workdir":
+		case "backend", "agent", "model", "cwd":
 			mode = 0666
 		default:
 			if path == "/backends" || path == "/help" {

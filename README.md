@@ -32,7 +32,7 @@ ollie/
       reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
-      workdir           r/w:   working directory for tool execution and system prompt
+      cwd               r/w:   working directory for tool execution and system prompt
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
@@ -66,11 +66,11 @@ The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`)
 
 ```sh
 cat ~/mnt/ollie/s/new                # show required/optional KV pairs
-echo "workdir=/home/lkn/src/myproject" > ~/mnt/ollie/s/new
-echo "workdir=/home/lkn/src/myproject backend=ollama model=qwen3:8b" > ~/mnt/ollie/s/new
+echo "cwd=/home/lkn/src/myproject" > ~/mnt/ollie/s/new
+echo "cwd=/home/lkn/src/myproject backend=ollama model=qwen3:8b" > ~/mnt/ollie/s/new
 ```
 
-Valid keys: `workdir` (required), `backend`, `model`, `agent`.
+Valid keys: `cwd` (required), `backend`, `model`, `agent`.
 
 A new session directory appears under `s/`.
 
@@ -162,7 +162,7 @@ cat ~/mnt/ollie/help         # show help (from ~/.config/ollie/help.md)
 ## Example shell session
 
 ```sh
-$ echo "workdir=/home/lkn/src/ollie" > ~/mnt/ollie/s/new
+$ echo "cwd=/home/lkn/src/ollie" > ~/mnt/ollie/s/new
 $ ls ~/mnt/ollie/s/
 new
 1744276689123456789-2b986c
