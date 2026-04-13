@@ -3,71 +3,73 @@ package p9
 import (
 	"context"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 
-	"ollie/pkg/agent"
 	"ollie/pkg/tools"
 )
 
-// queuePlanBackend implements tools.PlanBackend by enqueuing each step as a
-// prompt into the session's queue via agent.Core.Queue. It is used as the
-// reasoning_plan fallback when no task_create MCP tool is available.
+// filePlanBackend implements tools.PlanBackend by writing a markdown checklist
+// to the planning directory. The file persists across crashes so another
+// session can pick up where the previous one left off.
 //
-// Steps are enqueued in topological order (blockers before dependents). The
-// goal description is prepended to the first step for context. Placeholder IDs
-// ("q1", "q2", …) are returned so the agent can refer to steps by name.
-type queuePlanBackend struct {
-	core agent.Core
+// Filename: {sid}--{goal-slugified}__wip.md
+type filePlanBackend struct {
+	dir string // planning directory path
+	sid string // session ID (used in filename)
 }
 
-// CreatePlan enqueues each plan step as a prompt. Steps with After dependencies
-// are sorted so blockers are enqueued before the steps that depend on them.
-// The returned IDs are positional placeholders ("q1", "q2", …).
-func (b *queuePlanBackend) CreatePlan(_ context.Context, goal string, steps []tools.PlanStep) ([]string, string, error) {
+var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	s = slugRe.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 60 {
+		s = s[:60]
+		if i := strings.LastIndex(s, "-"); i > 20 {
+			s = s[:i]
+		}
+	}
+	return s
+}
+
+// CreatePlan writes a markdown checklist to disk and returns step IDs.
+func (b *filePlanBackend) CreatePlan(_ context.Context, goal string, steps []tools.PlanStep) ([]string, string, error) {
 	order, err := topoSort(steps)
 	if err != nil {
-		return nil, "", fmt.Errorf("queue plan: %w", err)
+		return nil, "", fmt.Errorf("file plan: %w", err)
 	}
 
+	slug := slugify(goal)
+	filename := b.sid + "--" + slug + "__wip.md"
+
+	var md strings.Builder
+	fmt.Fprintf(&md, "# %s\n\n", goal)
 	ids := make([]string, len(steps))
-	for i := range steps {
-		ids[i] = fmt.Sprintf("q%d", i+1)
+	for _, idx := range order {
+		step := steps[idx]
+		ids[idx] = fmt.Sprintf("s%d", idx+1)
+		fmt.Fprintf(&md, "- [ ] %s\n", step.Title)
+		if step.Body != "" {
+			for _, line := range strings.Split(step.Body, "\n") {
+				fmt.Fprintf(&md, "  %s\n", line)
+			}
+		}
 	}
 
-	for pos, idx := range order {
-		step := steps[idx]
-		var sb strings.Builder
-		if pos == 0 {
-			sb.WriteString("Goal: ")
-			sb.WriteString(goal)
-			sb.WriteString("\n\n")
-		}
-		sb.WriteString("Step ")
-		sb.WriteString(ids[idx])
-		sb.WriteString(": ")
-		sb.WriteString(step.Title)
-		if step.Body != "" {
-			sb.WriteString("\n")
-			sb.WriteString(step.Body)
-		}
-		if len(step.After) > 0 {
-			sb.WriteString("\n(after: ")
-			for i, dep := range step.After {
-				if i > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(ids[dep])
-			}
-			sb.WriteString(")")
-		}
-
-		b.core.Queue(sb.String())
+	if err := os.MkdirAll(b.dir, 0755); err != nil {
+		return nil, "", fmt.Errorf("file plan: %w", err)
+	}
+	path := b.dir + "/" + filename
+	if err := os.WriteFile(path, []byte(md.String()), 0644); err != nil {
+		return nil, "", fmt.Errorf("file plan: %w", err)
 	}
 
 	msg := fmt.Sprintf(
-		"Plan queued (%d steps). Stop here — do not execute. "+
-			"The queue will re-enter you with each step in order.",
-		len(steps),
+		"Plan saved to pl/%s (%d steps). Work through the checklist — mark items [x] as you complete them.",
+		filename, len(steps),
 	)
 	return ids, msg, nil
 }

@@ -95,6 +95,7 @@ type Server struct {
 	agentsDir   string
 	sessionsDir string
 	promptsDir  string
+	planDir     string // planning directory for /pl
 }
 
 // New creates a new Server.
@@ -104,7 +105,17 @@ func New() *Server {
 		agentsDir:   agent.DefaultAgentsDir(),
 		sessionsDir: agent.DefaultSessionsDir(),
 		promptsDir:  agent.DefaultPromptsDir(),
+		planDir:     defaultPlanDir(),
 	}
+}
+
+// defaultPlanDir returns the planning directory from OLLIE_PLAN_PATH or the default.
+func defaultPlanDir() string {
+	if p := os.Getenv("OLLIE_PLAN_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/planning"
 }
 
 // Serve handles a single 9P connection.
@@ -148,8 +159,7 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case plan9.Tstat:
 		return s.stat(cs, fc)
 	case plan9.Twstat:
-		// Accept and ignore wstat; 9pfuse sends Twstat for O_TRUNC on open files.
-		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+		return s.wstat(cs, fc)
 	case plan9.Tflush:
 		// No blocking reads to cancel; always succeed.
 		return &plan9.Fcall{Type: plan9.Rflush, Tag: fc.Tag}
@@ -190,12 +200,18 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "p":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "pl":
+		return "dir"
 	case len(parts) == 1 && parts[0] == "sk":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
 		return "dir"
 	case len(parts) == 2 && parts[0] == "p":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
+			return "file"
+		}
+	case len(parts) == 2 && parts[0] == "pl":
+		if _, err := os.Stat(s.planDir + "/" + parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "sk":
@@ -337,7 +353,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if !ok {
 		return errFcall(fc, "bad fid")
 	}
-	if f.path != "/p" && f.path != "/sk" && f.path != "/t" {
+	if f.path != "/p" && f.path != "/pl" && f.path != "/sk" && f.path != "/t" {
 		return errFcall(fc, "create not supported")
 	}
 
@@ -349,6 +365,11 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case "/p":
 		os.MkdirAll(s.promptsDir, 0755) //nolint:errcheck
 		if err := os.WriteFile(s.promptsDir+"/"+fc.Name, nil, 0644); err != nil {
+			return errFcall(fc, err.Error())
+		}
+	case "/pl":
+		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
+		if err := os.WriteFile(s.planDir+"/"+fc.Name, nil, 0644); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	case "/t":
@@ -404,6 +425,24 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Prompt files are served from disk.
 	if strings.HasPrefix(path, "/p/") {
 		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		var data []byte
+		off := int(fc.Offset)
+		if off < len(content) {
+			end := off + int(fc.Count)
+			if end > len(content) {
+				end = len(content)
+			}
+			data = content[off:end]
+		}
+		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+	}
+
+	// Plan files are served from disk.
+	if strings.HasPrefix(path, "/pl/") {
+		content, err := os.ReadFile(s.planDir + "/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -630,6 +669,43 @@ func (s *Server) stat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rstat, Tag: fc.Tag, Stat: stat}
 }
 
+func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
+	cs.mu.Lock()
+	f, ok := cs.fids[fc.Fid]
+	cs.mu.Unlock()
+	if !ok {
+		return errFcall(fc, "bad fid")
+	}
+
+	// Only /pl files support rename via wstat.
+	if !strings.HasPrefix(f.path, "/pl/") {
+		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+	}
+
+	// Parse the new Dir from the stat bytes.
+	newDir, err := plan9.UnmarshalDir(fc.Stat)
+	if err != nil {
+		// Some clients send minimal wstat (e.g. truncate); accept silently.
+		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+	}
+
+	// If the name changed, rename the file on disk.
+	oldName := pathBase(f.path)
+	if newDir.Name != "" && newDir.Name != oldName {
+		oldPath := s.planDir + "/" + oldName
+		newPath := s.planDir + "/" + newDir.Name
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		cs.mu.Lock()
+		f.path = "/pl/" + newDir.Name
+		f.qid.Path = qidPath(f.path)
+		cs.mu.Unlock()
+	}
+
+	return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
+}
+
 func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.Lock()
 	f, ok := cs.fids[fc.Fid]
@@ -662,6 +738,15 @@ func (s *Server) handleWrite(path, input string) {
 	if strings.HasPrefix(path, "/p/") {
 		if err := os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "olliesrv: write prompt: %v\n", err)
+		}
+		return
+	}
+
+	// Plan file writes go directly to disk.
+	if strings.HasPrefix(path, "/pl/") {
+		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
+		if err := os.WriteFile(s.planDir+"/"+pathBase(path), []byte(input), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "olliesrv: write plan: %v\n", err)
 		}
 		return
 	}
@@ -855,8 +940,16 @@ func (s *Server) createSession(args []string) error {
 	})
 
 	sessID := agent.NewSessionID()
-	fallback := &queuePlanBackend{}
+	fallback := &filePlanBackend{dir: s.planDir, sid: sessID}
 	env := agent.BuildAgentEnv(cfg, newDisp(), workdir, agent.WithFallbackPlanBackend(fallback))
+
+	// Inject per-session env vars into the execute server.
+	if srv, ok := env.Dispatcher().GetServer("execute"); ok {
+		if es, ok := srv.(tools.EnvSetter); ok {
+			es.SetEnv("OLLIE_SESSION_ID", sessID)
+			es.SetEnv("OLLIE_PLAN_PATH", s.planDir)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
@@ -869,7 +962,6 @@ func (s *Server) createSession(args []string) error {
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
-	fallback.core = core
 
 	sess := &session{
 		id:     sessID,
@@ -951,6 +1043,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 	if path == "/" {
 		dirs = append(dirs, makeDir("ctl", "/ctl", false, 0200))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
+		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
@@ -959,6 +1052,18 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		for _, e := range entries {
 			if !e.IsDir() {
 				dirs = append(dirs, makeDir(e.Name(), "/p/"+e.Name(), false, 0666))
+			}
+		}
+	} else if path == "/pl" {
+		entries, _ := os.ReadDir(s.planDir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				d := makeDir(e.Name(), "/pl/"+e.Name(), false, 0666)
+				if info, err := e.Info(); err == nil {
+					d.Atime = uint32(info.ModTime().Unix())
+					d.Mtime = uint32(info.ModTime().Unix())
+				}
+				dirs = append(dirs, d)
 			}
 		}
 	} else if path == "/sk" {
@@ -1057,7 +1162,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/p" {
+		} else if path == "/p" || path == "/pl" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1072,6 +1177,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0666
 		default:
 			if strings.HasPrefix(path, "/p/") {
+				mode = 0666
+			} else if strings.HasPrefix(path, "/pl/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0666
@@ -1114,6 +1221,15 @@ func (s *Server) makeStat(path string) plan9.Dir {
 					sess.mu.RUnlock()
 				}
 			}
+		}
+	}
+
+	// For plan files, report real size and timestamps from disk.
+	if strings.HasPrefix(path, "/pl/") {
+		if info, err := os.Stat(s.planDir + "/" + base); err == nil {
+			dir.Length = uint64(info.Size())
+			dir.Atime = uint32(info.ModTime().Unix())
+			dir.Mtime = uint32(info.ModTime().Unix())
 		}
 	}
 
