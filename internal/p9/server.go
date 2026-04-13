@@ -11,7 +11,7 @@
 //	    s/                  (dir)   session directory
 //	        new             (r/w)   read: KV template; write: create session
 //	        {session-id}/           rm -r to kill session; mv to rename
-//	            ctl         (write) session control: compact, clear, interrupt
+//	            ctl         (write) session control: stop, kill, rn, compact, clear
 //	            prompt      (write) submit a prompt to the agent
 //	            enqueue     (write) queue a prompt for later execution
 //	            dequeue     (read)  pop the next queued prompt
