@@ -3,6 +3,9 @@
 // Filesystem layout:
 //
 //	ollie/
+//	    a/                  (dir)   agent configs (r/w, backed by ~/.config/ollie/agents/)
+//	    backends            (read)  list of ollie-provided backends
+//	    help                (read)  help file (backed by ~/.config/ollie/help.md)
 //	    p/                  (dir)   prompt templates
 //	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
@@ -13,8 +16,16 @@
 //	            enqueue     (write) queue a prompt for later execution
 //	            dequeue     (read)  pop the next queued prompt
 //	            chat        (read)  cumulative chat history
-//	            backend     (r/w)   read/write the active backend name
-//	            agent       (r/w)   read/write the active agent name
+//	            reply       (read)  assistant text from the most recent turn
+//	            state       (read)  current agent state
+//	            backend     (r/w)   active backend name
+//	            agent       (r/w)   active agent name
+//	            model       (r/w)   active model name
+//	            models      (read)  available models from the backend
+//	            mcp         (read)  MCP server list
+//	            workdir     (r/w)   working directory
+//	            usage       (read)  token counts
+//	            ctxsz       (read)  context size vs window
 //	    sk/                 (dir)   skills
 //	    t/                  (dir)   tool scripts
 package p9
@@ -210,6 +221,8 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 2 && parts[0] == "s" && parts[1] == "new":
 		return "file"
+	case len(parts) == 1 && parts[0] == "a":
+		return "dir"
 	case len(parts) == 1 && parts[0] == "p":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "pl":
@@ -218,6 +231,14 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "backends":
+		return "file"
+	case len(parts) == 1 && parts[0] == "help":
+		return "file"
+	case len(parts) == 2 && parts[0] == "a":
+		if _, err := os.Stat(s.agentsDir + "/" + parts[1]); err == nil {
+			return "file"
+		}
 	case len(parts) == 2 && parts[0] == "p":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
 			return "file"
@@ -365,7 +386,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if !ok {
 		return errFcall(fc, "bad fid")
 	}
-	if f.path != "/p" && f.path != "/pl" && f.path != "/sk" && f.path != "/t" {
+	if f.path != "/a" && f.path != "/p" && f.path != "/pl" && f.path != "/sk" && f.path != "/t" {
 		return errFcall(fc, "create not supported")
 	}
 	if fc.Perm&plan9.DMDIR != 0 {
@@ -377,6 +398,11 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Actually create the file on disk so that even a no-write create
 	// (e.g. touch) produces a real file.
 	switch f.path {
+	case "/a":
+		os.MkdirAll(s.agentsDir, 0755) //nolint:errcheck
+		if err := os.WriteFile(s.agentsDir+"/"+fc.Name, nil, 0644); err != nil {
+			return errFcall(fc, err.Error())
+		}
 	case "/p":
 		os.MkdirAll(s.promptsDir, 0755) //nolint:errcheck
 		if err := os.WriteFile(s.promptsDir+"/"+fc.Name, nil, 0644); err != nil {
@@ -440,16 +466,31 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// s/new returns the session creation template.
 	if path == "/s/new" {
 		content := []byte("workdir=\nbackend=\nmodel=\nagent=\n")
-		var data []byte
-		off := int(fc.Offset)
-		if off < len(content) {
-			end := off + int(fc.Count)
-			if end > len(content) {
-				end = len(content)
-			}
-			data = content[off:end]
+		return s.readSlice(fc, content)
+	}
+
+	// backends is a static list of ollie-provided backends.
+	if path == "/backends" {
+		content := []byte(strings.Join(backend.Backends(), "\n") + "\n")
+		return s.readSlice(fc, content)
+	}
+
+	// help is served from ~/.config/ollie/help.md.
+	if path == "/help" {
+		content, err := os.ReadFile(s.helpPath())
+		if err != nil {
+			return errFcall(fc, err.Error())
 		}
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+		return s.readSlice(fc, content)
+	}
+
+	// Agent config files are served from disk.
+	if strings.HasPrefix(path, "/a/") {
+		content, err := os.ReadFile(s.agentsDir + "/" + pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
 	}
 
 	// Prompt files are served from disk.
@@ -458,16 +499,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
-		var data []byte
-		off := int(fc.Offset)
-		if off < len(content) {
-			end := off + int(fc.Count)
-			if end > len(content) {
-				end = len(content)
-			}
-			data = content[off:end]
-		}
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+		return s.readSlice(fc, content)
 	}
 
 	// Plan files are served from disk.
@@ -476,16 +508,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
-		var data []byte
-		off := int(fc.Offset)
-		if off < len(content) {
-			end := off + int(fc.Count)
-			if end > len(content) {
-				end = len(content)
-			}
-			data = content[off:end]
-		}
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+		return s.readSlice(fc, content)
 	}
 
 	// Skill files are served via pkg/skills (reads from disk each time).
@@ -495,16 +518,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
-		var data []byte
-		off := int(fc.Offset)
-		if off < len(content) {
-			end := off + int(fc.Count)
-			if end > len(content) {
-				end = len(content)
-			}
-			data = content[off:end]
-		}
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+		return s.readSlice(fc, content)
 	}
 
 	// Tool files are served from the tools path.
@@ -513,16 +527,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
-		var data []byte
-		off := int(fc.Offset)
-		if off < len(content) {
-			end := off + int(fc.Count)
-			if end > len(content) {
-				end = len(content)
-			}
-			data = content[off:end]
-		}
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+		return s.readSlice(fc, content)
 	}
 
 	content := s.readFile(path)
@@ -625,6 +630,25 @@ func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 }
 
+// readSlice serves a byte slice at the requested offset/count.
+func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
+	var data []byte
+	off := int(fc.Offset)
+	if off < len(content) {
+		end := off + int(fc.Count)
+		if end > len(content) {
+			end = len(content)
+		}
+		data = content[off:end]
+	}
+	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+}
+
+func (s *Server) helpPath() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/help.md"
+}
+
 // readFile returns the text content for a readable session file.
 func (s *Server) readFile(path string) string {
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
@@ -720,6 +744,17 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	switch {
+	case strings.HasPrefix(f.path, "/a/"):
+		oldPath := s.agentsDir + "/" + oldName
+		newPath := s.agentsDir + "/" + newDir.Name
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		cs.mu.Lock()
+		f.path = "/a/" + newDir.Name
+		f.qid.Path = qidPath(f.path)
+		cs.mu.Unlock()
+
 	case strings.HasPrefix(f.path, "/pl/"):
 		oldPath := s.planDir + "/" + oldName
 		newPath := s.planDir + "/" + newDir.Name
@@ -845,8 +880,12 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	path := f.path
 	var err error
 	switch {
+	case strings.HasPrefix(path, "/a/"):
+		err = os.Remove(s.agentsDir + "/" + pathBase(path))
 	case strings.HasPrefix(path, "/p/"):
 		err = os.Remove(s.promptsDir + "/" + pathBase(path))
+	case strings.HasPrefix(path, "/pl/"):
+		err = os.Remove(s.planDir + "/" + pathBase(path))
 	case strings.HasPrefix(path, "/sk/"):
 		name := strings.TrimSuffix(pathBase(path), ".md")
 		for _, m := range skills.List() {
@@ -883,6 +922,11 @@ func (s *Server) handleWrite(path, input string) error {
 	// Prompt file writes go directly to disk.
 	if strings.HasPrefix(path, "/p/") {
 		return os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644)
+	}
+
+	// Agent config writes go directly to disk.
+	if strings.HasPrefix(path, "/a/") {
+		return os.WriteFile(s.agentsDir+"/"+pathBase(path), []byte(input), 0644)
 	}
 
 	// Plan file writes go directly to disk.
@@ -1183,11 +1227,21 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 	}
 
 	if path == "/" {
+		dirs = append(dirs, makeDir("a", "/a", true, plan9.DMDIR|0755))
+		dirs = append(dirs, makeDir("backends", "/backends", false, 0444))
+		dirs = append(dirs, makeDir("help", "/help", false, 0444))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
+	} else if path == "/a" {
+		entries, _ := os.ReadDir(s.agentsDir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				dirs = append(dirs, makeDir(e.Name(), "/a/"+e.Name(), false, 0666))
+			}
+		}
 	} else if path == "/p" {
 		entries, _ := os.ReadDir(s.promptsDir)
 		for _, e := range entries {
@@ -1304,7 +1358,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/p" || path == "/pl" {
+		} else if path == "/a" || path == "/p" || path == "/pl" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1318,7 +1372,11 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "workdir":
 			mode = 0666
 		default:
-			if path == "/s/new" {
+			if path == "/backends" || path == "/help" {
+				mode = 0444
+			} else if path == "/s/new" {
+				mode = 0666
+			} else if strings.HasPrefix(path, "/a/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/p/") {
 				mode = 0666

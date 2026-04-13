@@ -8,25 +8,31 @@ The goal is integration, not self-sufficiency. Rather than providing orchestrati
 
 ```
 ollie/
+  a/                    dir:   agent configs (r/w, backed by ~/.config/ollie/agents/)
+    <name>.json         r/w:   agent config; supports mv, cp, rm
+  backends              read:  list of ollie-provided backends
+  help                  read:  help file (backed by ~/.config/ollie/help.md)
   p/                    dir:   prompt templates (r/w, backed by ~/.config/ollie/prompts/)
     SYSTEM_PROMPT.md    r/w:   the system prompt template
   pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
     new                 r/w:   read: KV template; write: create session
     <session-id>/               rm -r to kill session; mv to rename
-      prompt            write: submit a prompt to the agent
-      enqueue           write: queue a prompt for later execution
-      dequeue           read:  pop the next queued prompt
+      agent             r/w:   active agent name
+      backend           r/w:   active backend name
       chat              read:  cumulative conversation history
+      ctl               write: stop | <command>
+      ctxsz             read:  estimated context size vs context window
+      dequeue           read:  pop the next queued prompt
+      enqueue           write: queue a prompt for later execution
+      mcp               read:  MCP server list
+      model             r/w:   active model name
+      models            read:  available models from the backend
+      prompt            write: submit a prompt to the agent
       reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)
-      ctl               write: stop | <command>
-      backend           r/w:   active backend name
-      agent             r/w:   active agent name
-      model             r/w:   active model name
-      workdir           r/w:   working directory for tool execution and system prompt
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
-      ctxsz             read:  estimated context size vs context window
+      workdir           r/w:   working directory for tool execution and system prompt
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
@@ -128,6 +134,30 @@ mv ~/mnt/ollie/s/<session-id> ~/mnt/ollie/s/my-friendly-name
 ```
 
 Rename is rejected if the agent is running or the target name already exists. All open file handles into the session are updated automatically.
+
+## Agents
+
+Agent configs live in `a/` and are backed by `~/.config/ollie/agents/`. They're plain JSON files.
+
+```sh
+ls ~/mnt/ollie/a/                                    # list agents
+cat ~/mnt/ollie/a/default.json                       # read an agent config
+cp ~/mnt/ollie/a/default.json ~/mnt/ollie/a/yolo.json  # copy an agent
+mv ~/mnt/ollie/a/old.json ~/mnt/ollie/a/new.json     # rename
+rm ~/mnt/ollie/a/scratch.json                         # delete
+```
+
+## Backends
+
+```sh
+cat ~/mnt/ollie/backends     # list available backends
+```
+
+## Help
+
+```sh
+cat ~/mnt/ollie/help         # show help (from ~/.config/ollie/help.md)
+```
 
 ## Example shell session
 
