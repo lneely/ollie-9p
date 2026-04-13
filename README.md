@@ -109,7 +109,7 @@ echo "rn my-name" > ~/mnt/ollie/s/<session-id>/ctl   # rename session
 echo "model qwen3:8b" > ~/mnt/ollie/s/<session-id>/ctl
 ```
 
-`ctl` accepts `stop`, `kill`, `rn <name>`, or any command supported by the agent (the `/` prefix is added automatically).
+`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `mcp`, `context`, `usage`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
 
 ### Switch backend, model, or agent
 
@@ -119,7 +119,7 @@ echo qwen3:8b > ~/mnt/ollie/s/<session-id>/model
 echo myagent > ~/mnt/ollie/s/<session-id>/agent
 ```
 
-Writes to `backend`, `model`, and `agent` are rejected with an error when the agent is not idle. Writes via `ctl` are asynchronous and cannot return errors; if the agent is running, the command is silently rejected. Check `state` to confirm the change took effect.
+Writes to `backend`, `model`, and `agent` are rejected with an error when the agent is not idle. Writes to `ctl` return an error for unrecognized commands; recognized commands are dispatched asynchronously. Check `state` to confirm the change took effect.
 
 ### Kill a session
 

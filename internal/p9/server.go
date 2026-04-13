@@ -1039,19 +1039,28 @@ func (s *Server) handleWrite(path, input string) error {
 		return nil
 
 	case "ctl":
-		switch {
-		case input == "stop":
+		cmd := strings.Fields(input)
+		if len(cmd) == 0 {
+			return fmt.Errorf("empty ctl command")
+		}
+		switch cmd[0] {
+		case "stop":
 			sess.core.Interrupt(agent.ErrInterrupted)
-		case input == "kill":
+		case "kill":
 			s.killSession(sessID)
-		case strings.HasPrefix(input, "rn "):
+		case "rn":
 			if name := strings.TrimSpace(input[3:]); name != "" {
 				if err := s.renameSession(sessID, name); err != nil {
 					fmt.Fprintf(os.Stderr, "olliesrv: rename: %v\n", err)
 				}
 			}
-		default:
+		case "compact", "clear", "backend", "model", "models",
+			"agents", "agent", "sessions", "cwd", "skills",
+			"tools", "mcp", "context", "usage", "history",
+			"irw", "help":
 			sess.core.Submit(sess.ctx, "/"+input, publish)
+		default:
+			return fmt.Errorf("unknown ctl command: %s", cmd[0])
 		}
 		return nil
 
