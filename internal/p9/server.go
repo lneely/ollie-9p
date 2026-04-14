@@ -1090,7 +1090,8 @@ func (s *Server) handleWrite(path, input string) error {
 	// Memory file writes go directly to disk.
 	if strings.HasPrefix(path, "/m/") {
 		os.MkdirAll(s.memDir, 0755) //nolint:errcheck
-		return os.WriteFile(s.memDir+"/"+pathBase(path), []byte(input), 0644)
+		dest := s.memDir + "/" + pathBase(path)
+		return os.WriteFile(dest, []byte(input), 0644)
 	}
 
 	// Plan file writes go directly to disk.
