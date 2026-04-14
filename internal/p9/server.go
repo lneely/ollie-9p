@@ -145,13 +145,15 @@ type Server struct {
 
 // New creates a new Server.
 func New() *Server {
+	memDir := defaultMemDir()
+	os.MkdirAll(memDir, 0755) //nolint:errcheck
 	return &Server{
 		sessions:    make(map[string]*session),
 		agentsDir:   agent.DefaultAgentsDir(),
 		sessionsDir: agent.DefaultSessionsDir(),
 		promptsDir:  agent.DefaultPromptsDir(),
 		planDir:     defaultPlanDir(),
-		memDir:      defaultMemDir(),
+		memDir:      memDir,
 	}
 }
 
