@@ -8,33 +8,46 @@ import (
 
 // syntheticFileInfo implements os.FileInfo for entries with no backing file.
 type syntheticFileInfo struct {
-	name string
-	mode os.FileMode
-	size int64
+	name  string
+	mode  os.FileMode
+	size  int64
+	isDir bool
 }
 
 func (f *syntheticFileInfo) Name() string       { return f.name }
 func (f *syntheticFileInfo) Size() int64        { return f.size }
 func (f *syntheticFileInfo) Mode() os.FileMode  { return f.mode }
 func (f *syntheticFileInfo) ModTime() time.Time { return time.Time{} }
-func (f *syntheticFileInfo) IsDir() bool        { return false }
+func (f *syntheticFileInfo) IsDir() bool        { return f.isDir }
 func (f *syntheticFileInfo) Sys() any           { return nil }
 
-// syntheticDirEntry implements os.DirEntry for entries with no backing file.
-type syntheticDirEntry struct {
-	name string
-	mode os.FileMode
+// syntheticEntryImpl implements os.DirEntry for entries with no backing file.
+type syntheticEntryImpl struct {
+	name  string
+	mode  os.FileMode
+	isDir bool
 }
 
-func (e *syntheticDirEntry) Name() string               { return e.name }
-func (e *syntheticDirEntry) IsDir() bool                { return false }
-func (e *syntheticDirEntry) Type() os.FileMode          { return 0 }
-func (e *syntheticDirEntry) Info() (os.FileInfo, error) {
-	return &syntheticFileInfo{name: e.name, mode: e.mode}, nil
+func (e *syntheticEntryImpl) Name() string      { return e.name }
+func (e *syntheticEntryImpl) IsDir() bool       { return e.isDir }
+func (e *syntheticEntryImpl) Type() os.FileMode {
+	if e.isDir {
+		return os.ModeDir
+	}
+	return 0
+}
+func (e *syntheticEntryImpl) Info() (os.FileInfo, error) {
+	return &syntheticFileInfo{name: e.name, mode: e.mode, isDir: e.isDir}, nil
 }
 
+// syntheticEntry returns a synthetic file DirEntry.
 func syntheticEntry(name string, mode os.FileMode) os.DirEntry {
-	return &syntheticDirEntry{name: name, mode: mode}
+	return &syntheticEntryImpl{name: name, mode: mode}
+}
+
+// syntheticDirEntry returns a synthetic directory DirEntry.
+func syntheticDirEntry(name string, mode os.FileMode) os.DirEntry {
+	return &syntheticEntryImpl{name: name, mode: mode, isDir: true}
 }
 
 // ReadableStore is a named collection of byte blobs supporting only read operations.

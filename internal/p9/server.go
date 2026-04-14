@@ -141,8 +141,9 @@ type Server struct {
 	promptStore ReadableStore
 	planStore   Store
 	memStore    Store
-	toolStore   Store
-	skillStore  Store
+	toolStore    Store
+	skillStore   Store
+	sessionStore Store
 }
 
 // New creates a new Server.
@@ -150,7 +151,7 @@ func New() *Server {
 	memDir := defaultMemDir()
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
-	return &Server{
+	s := &Server{
 		sessions:    make(map[string]*session),
 		agentsDir:   agentsDir,
 		sessionsDir: agent.DefaultSessionsDir(),
@@ -161,6 +162,8 @@ func New() *Server {
 		toolStore:   NewToolStore(),
 		skillStore:  NewSkillStore(),
 	}
+	s.sessionStore = &SessionStore{srv: s}
+	return s
 }
 
 // defaultPlanDir returns the planning directory from OLLIE_PLAN_PATH or the default.
@@ -287,10 +290,13 @@ func (s *Server) pathType(path string) string {
 	switch {
 	case len(parts) == 1 && parts[0] == "s":
 		return "dir"
-	case len(parts) == 2 && parts[0] == "s" && parts[1] == "new":
-		return "file"
-	case len(parts) == 2 && parts[0] == "s" && parts[1] == "idx":
-		return "file"
+	case len(parts) == 2 && parts[0] == "s":
+		if info, err := s.sessionStore.Stat(parts[1]); err == nil {
+			if info.IsDir() {
+				return "dir"
+			}
+			return "file"
+		}
 	case len(parts) == 1 && parts[0] == "a":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "p":
@@ -331,23 +337,11 @@ func (s *Server) pathType(path string) string {
 		if _, err := s.toolStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
-	case len(parts) == 2 && parts[0] == "s":
-		s.mu.RLock()
-		_, ok := s.sessions[parts[1]]
-		s.mu.RUnlock()
-		if ok {
-			return "dir"
-		}
 	case len(parts) == 3 && parts[0] == "s":
-		s.mu.RLock()
-		_, ok := s.sessions[parts[1]]
-		s.mu.RUnlock()
-		if !ok {
-			return ""
-		}
-		switch parts[2] {
-		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "cwd", "usage", "ctxsz", "systemprompt":
-			return "file"
+		if store, ok := s.sessionFileStore(parts[1]); ok {
+			if _, err := store.Stat(parts[2]); err == nil {
+				return "file"
+			}
 		}
 	}
 	return ""
@@ -515,27 +509,13 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
-	// s/new returns the session creation template.
-	if path == "/s/new" {
-		content := []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n")
-		return s.readSlice(fc, content)
-	}
-
-	// s/idx is a live index of all sessions: name state cwd backend model.
-	if path == "/s/idx" {
-		var sb strings.Builder
-		s.mu.RLock()
-		for id, sess := range s.sessions {
-			sess.mu.RLock()
-			state := sess.core.State()
-			cwd := sess.core.CWD()
-			be := sess.core.BackendName()
-			model := sess.core.ModelName()
-			sess.mu.RUnlock()
-			fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\t%s\n", id, state, cwd, be, model)
+	// s/new and s/idx are served from the session store.
+	if path == "/s/new" || path == "/s/idx" {
+		content, err := s.sessionStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
 		}
-		s.mu.RUnlock()
-		return s.readSlice(fc, []byte(sb.String()))
+		return s.readSlice(fc, content)
 	}
 
 	// backends is a static list of ollie-provided backends.
@@ -756,7 +736,7 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if len(parts) != 2 || parts[0] != "s" {
 			return errFcall(fc, "rename not supported")
 		}
-		if err := s.renameSession(parts[1], newDir.Name); err != nil {
+		if err := s.sessionStore.Rename(parts[1], newDir.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 
@@ -882,7 +862,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case strings.HasPrefix(path, "/t/"):
 		err = s.toolStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/s/") && path != "/s/new":
-		s.killSession(pathBase(path))
+		err = s.sessionStore.Delete(pathBase(path))
 	default:
 		return errFcall(fc, "remove not supported")
 	}
@@ -901,7 +881,7 @@ func (s *Server) handleWrite(path, input string) error {
 	}
 
 	if path == "/s/new" {
-		return s.handleNewSession(input)
+		return s.sessionStore.Put("new", []byte(input))
 	}
 
 	// Agent config writes go to the agent store.
@@ -1219,13 +1199,15 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
 		}
 	} else if path == "/s" {
-		dirs = append(dirs, makeDir("new", "/s/new", false, 0666))
-		dirs = append(dirs, makeDir("idx", "/s/idx", false, 0444))
-		s.mu.RLock()
-		for id := range s.sessions {
-			dirs = append(dirs, makeDir(id, "/s/"+id, true, plan9.DMDIR|0555))
+		entries, _ := s.sessionStore.List()
+		for _, e := range entries {
+			info, _ := e.Info()
+			perm := plan9.Perm(info.Mode() & 0777)
+			if e.IsDir() {
+				perm = plan9.DMDIR | perm
+			}
+			dirs = append(dirs, makeDir(e.Name(), "/s/"+e.Name(), e.IsDir(), perm))
 		}
-		s.mu.RUnlock()
 	} else {
 		// Session subdirectory: /s/{sessid}
 		sessID := pathBase(path)
