@@ -50,8 +50,6 @@ import (
 	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
-	"ollie/pkg/tools/file"
-	"ollie/pkg/tools/reasoning"
 )
 
 const (
@@ -972,6 +970,13 @@ func (s *Server) renameSession(oldID, newID string) error {
 		c.mu.Unlock()
 	}
 
+	// Rename the session tmpdir so isread markers remain valid.
+	oldTemp := "/tmp/ollie/" + oldID
+	newTemp := "/tmp/ollie/" + newID
+	if _, err := os.Stat(oldTemp); err == nil {
+		os.Rename(oldTemp, newTemp) //nolint:errcheck
+	}
+
 	sess.appendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
 	fmt.Fprintf(os.Stderr, "olliesrv: renamed session %s -> %s\n", oldID, newID)
 	return nil
@@ -1308,8 +1313,6 @@ func (s *Server) createSession(args []string) error {
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute":   execute.Decl(cwd),
-		"file":      file.Decl(cwd),
-		"reasoning": reasoning.Decl(),
 	})
 
 	sessID := name
@@ -1323,6 +1326,11 @@ func (s *Server) createSession(args []string) error {
 	if exists {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
+
+	// Initialize clean tmpdir for this session.
+	sessTemp := "/tmp/ollie/" + sessID
+	os.RemoveAll(sessTemp)          //nolint:errcheck
+	os.MkdirAll(sessTemp, 0700)     //nolint:errcheck
 
 	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
 
