@@ -1258,8 +1258,6 @@ func (s *Server) createSession(args []string) error {
 	if srv, ok := env.Dispatcher().GetServer("execute"); ok {
 		if es, ok := srv.(tools.EnvSetter); ok {
 			es.SetEnv("OLLIE_SESSION_ID", sessID)
-			es.SetEnv("OLLIE_MEMORY_PATH", s.memDir)
-			es.SetEnv("OLLIE_PLAN_PATH", s.planDir)
 		}
 	}
 
