@@ -160,6 +160,7 @@ func runServer(sockPath, pidPath string) {
 	<-sigChan
 
 	fmt.Println("shutting down")
+	srv.Shutdown()
 	if fuseCmd != nil {
 		exec.Command("fusermount", "-u", mnt).Run() //nolint:errcheck
 		fuseCmd.Wait()                               //nolint:errcheck

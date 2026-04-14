@@ -1377,6 +1377,19 @@ func (s *Server) createSession(args []string) error {
 	return nil
 }
 
+// Shutdown kills all active sessions, triggering Close() on each core.
+func (s *Server) Shutdown() {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		s.killSession(id)
+	}
+}
+
 func (s *Server) killSession(id string) {
 	s.mu.Lock()
 	sess := s.sessions[id]
