@@ -6,6 +6,7 @@
 //	    a/                  (dir)   agent configs (r/w, backed by ~/.config/ollie/agents/)
 //	    backends            (read)  list of ollie-provided backends
 //	    help                (read)  help file (backed by ~/.config/ollie/help.md)
+//	    m/                  (dir)   memories (r/w, backed by OLLIE_MEMORY_PATH)
 //	    p/                  (dir)   prompt templates
 //	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
@@ -142,6 +143,7 @@ type Server struct {
 	sessionsDir string
 	promptsDir  string
 	planDir     string // planning directory for /pl
+	memDir      string // memory directory for /m
 }
 
 // New creates a new Server.
@@ -152,6 +154,7 @@ func New() *Server {
 		sessionsDir: agent.DefaultSessionsDir(),
 		promptsDir:  agent.DefaultPromptsDir(),
 		planDir:     defaultPlanDir(),
+		memDir:      defaultMemDir(),
 	}
 }
 
@@ -162,6 +165,15 @@ func defaultPlanDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return home + "/.config/ollie/planning"
+}
+
+// defaultMemDir returns the memory directory from OLLIE_MEMORY_PATH or the default.
+func defaultMemDir() string {
+	if p := os.Getenv("OLLIE_MEMORY_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return home + "/.local/share/ollie/memory"
 }
 
 // Serve handles a single 9P connection.
@@ -261,6 +273,8 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "p":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "m":
+		return "dir"
 	case len(parts) == 1 && parts[0] == "pl":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "sk":
@@ -277,6 +291,10 @@ func (s *Server) pathType(path string) string {
 		}
 	case len(parts) == 2 && parts[0] == "p":
 		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
+			return "file"
+		}
+	case len(parts) == 2 && parts[0] == "m":
+		if _, err := os.Stat(s.memDir + "/" + parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "pl":
@@ -444,6 +462,11 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err := os.WriteFile(s.promptsDir+"/"+fc.Name, nil, 0644); err != nil {
 			return errFcall(fc, err.Error())
 		}
+	case "/m":
+		os.MkdirAll(s.memDir, 0755) //nolint:errcheck
+		if err := os.WriteFile(s.memDir+"/"+fc.Name, nil, 0644); err != nil {
+			return errFcall(fc, err.Error())
+		}
 	case "/pl":
 		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
 		if err := os.WriteFile(s.planDir+"/"+fc.Name, nil, 0644); err != nil {
@@ -532,6 +555,15 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Prompt files are served from disk.
 	if strings.HasPrefix(path, "/p/") {
 		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+
+	// Memory files are served from disk.
+	if strings.HasPrefix(path, "/m/") {
+		content, err := os.ReadFile(s.memDir + "/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -791,6 +823,17 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		f.qid.Path = qidPath(f.path)
 		cs.mu.Unlock()
 
+	case strings.HasPrefix(f.path, "/m/"):
+		oldPath := s.memDir + "/" + oldName
+		newPath := s.memDir + "/" + newDir.Name
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		cs.mu.Lock()
+		f.path = "/m/" + newDir.Name
+		f.qid.Path = qidPath(f.path)
+		cs.mu.Unlock()
+
 	case strings.HasPrefix(f.path, "/pl/"):
 		oldPath := s.planDir + "/" + oldName
 		newPath := s.planDir + "/" + newDir.Name
@@ -920,6 +963,8 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		err = os.Remove(s.agentsDir + "/" + pathBase(path))
 	case strings.HasPrefix(path, "/p/"):
 		err = os.Remove(s.promptsDir + "/" + pathBase(path))
+	case strings.HasPrefix(path, "/m/"):
+		err = os.Remove(s.memDir + "/" + pathBase(path))
 	case strings.HasPrefix(path, "/pl/"):
 		err = os.Remove(s.planDir + "/" + pathBase(path))
 	case strings.HasPrefix(path, "/sk/"):
@@ -963,6 +1008,12 @@ func (s *Server) handleWrite(path, input string) error {
 	// Agent config writes go directly to disk.
 	if strings.HasPrefix(path, "/a/") {
 		return os.WriteFile(s.agentsDir+"/"+pathBase(path), []byte(input), 0644)
+	}
+
+	// Memory file writes go directly to disk.
+	if strings.HasPrefix(path, "/m/") {
+		os.MkdirAll(s.memDir, 0755) //nolint:errcheck
+		return os.WriteFile(s.memDir+"/"+pathBase(path), []byte(input), 0644)
 	}
 
 	// Plan file writes go directly to disk.
@@ -1211,6 +1262,7 @@ func (s *Server) createSession(args []string) error {
 	if srv, ok := env.Dispatcher().GetServer("execute"); ok {
 		if es, ok := srv.(tools.EnvSetter); ok {
 			es.SetEnv("OLLIE_SESSION_ID", sessID)
+			es.SetEnv("OLLIE_MEMORY_PATH", s.memDir)
 			es.SetEnv("OLLIE_PLAN_PATH", s.planDir)
 		}
 	}
@@ -1316,6 +1368,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("a", "/a", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("backends", "/backends", false, 0444))
 		dirs = append(dirs, makeDir("help", "/help", false, 0444))
+		dirs = append(dirs, makeDir("m", "/m", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
@@ -1333,6 +1386,18 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		for _, e := range entries {
 			if !e.IsDir() {
 				dirs = append(dirs, makeDir(e.Name(), "/p/"+e.Name(), false, 0666))
+			}
+		}
+	} else if path == "/m" {
+		entries, _ := os.ReadDir(s.memDir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				d := makeDir(e.Name(), "/m/"+e.Name(), false, 0666)
+				if info, err := e.Info(); err == nil {
+					d.Atime = uint32(info.ModTime().Unix())
+					d.Mtime = uint32(info.ModTime().Unix())
+				}
+				dirs = append(dirs, d)
 			}
 		}
 	} else if path == "/pl" {
@@ -1444,7 +1509,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/a" || path == "/p" || path == "/pl" {
+		} else if path == "/a" || path == "/m" || path == "/p" || path == "/pl" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1465,6 +1530,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			} else if strings.HasPrefix(path, "/a/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/p/") {
+				mode = 0666
+			} else if strings.HasPrefix(path, "/m/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/pl/") {
 				mode = 0666
@@ -1527,7 +1594,14 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		}
 	}
 
-	// For plan files, report real size and timestamps from disk.
+	// For memory and plan files, report real size and timestamps from disk.
+	if strings.HasPrefix(path, "/m/") {
+		if info, err := os.Stat(s.memDir + "/" + base); err == nil {
+			dir.Length = uint64(info.Size())
+			dir.Atime = uint32(info.ModTime().Unix())
+			dir.Mtime = uint32(info.ModTime().Unix())
+		}
+	}
 	if strings.HasPrefix(path, "/pl/") {
 		if info, err := os.Stat(s.planDir + "/" + base); err == nil {
 			dir.Length = uint64(info.Size())
