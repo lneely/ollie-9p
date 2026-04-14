@@ -332,7 +332,7 @@ func (s *Server) pathType(path string) string {
 			return ""
 		}
 		switch parts[2] {
-		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "cwd", "usage", "ctxsz":
+		case "ctl", "prompt", "enqueue", "dequeue", "chat", "reply", "backend", "agent", "model", "models", "mcp", "state", "cwd", "usage", "ctxsz", "systemprompt":
 			return "file"
 		}
 	}
@@ -823,6 +823,8 @@ func (s *Server) readFile(path string) string {
 		return sess.core.ListModels() + "\n"
 	case "mcp":
 		return sess.core.ListServers() + "\n"
+	case "systemprompt":
+		return sess.core.SystemPrompt()
 	}
 	return ""
 }
