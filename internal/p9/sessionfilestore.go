@@ -1,0 +1,231 @@
+package p9
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"ollie/pkg/agent"
+)
+
+// sessionFileList defines the fixed set of files in a session directory,
+// with their 9P permission modes.
+var sessionFileList = []struct {
+	name string
+	mode os.FileMode
+}{
+	{"ctl", 0200},
+	{"prompt", 0200},
+	{"enqueue", 0200},
+	{"dequeue", 0444},
+	{"chat", 0444},
+	{"reply", 0444},
+	{"state", 0444},
+	{"backend", 0666},
+	{"agent", 0666},
+	{"model", 0666},
+	{"cwd", 0666},
+	{"usage", 0444},
+	{"ctxsz", 0444},
+	{"models", 0444},
+	{"mcp", 0444},
+	{"systemprompt", 0444},
+}
+
+// SessionFileStore implements ReadWriteStore for the files within a single
+// session directory (/s/{id}/*). The file set is fixed; Create, Delete, and
+// Rename are not meaningful and are not part of the interface.
+type SessionFileStore struct {
+	sess   *session
+	kill   func()
+	rename func(newID string) error
+}
+
+func NewSessionFileStore(sess *session, kill func(), rename func(newID string) error) *SessionFileStore {
+	return &SessionFileStore{sess: sess, kill: kill, rename: rename}
+}
+
+func (s *SessionFileStore) List() ([]os.DirEntry, error) {
+	entries := make([]os.DirEntry, len(sessionFileList))
+	for i, f := range sessionFileList {
+		entries[i] = syntheticEntry(f.name, f.mode)
+	}
+	return entries, nil
+}
+
+func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
+	for _, f := range sessionFileList {
+		if f.name == name {
+			var size int64
+			switch name {
+			case "chat":
+				s.sess.mu.RLock()
+				size = int64(len(s.sess.chatLog))
+				s.sess.mu.RUnlock()
+			case "reply":
+				size = int64(len(s.sess.core.Reply()))
+			default:
+				size = int64(len(s.content(name)))
+			}
+			return &syntheticFileInfo{name: name, mode: f.mode, size: size}, nil
+		}
+	}
+	return nil, fmt.Errorf("%s: not found", name)
+}
+
+func (s *SessionFileStore) Get(name string) ([]byte, error) {
+	switch name {
+	case "chat":
+		s.sess.mu.RLock()
+		data := make([]byte, len(s.sess.chatLog))
+		copy(data, s.sess.chatLog)
+		s.sess.mu.RUnlock()
+		return data, nil
+	case "reply":
+		return []byte(s.sess.core.Reply()), nil
+	case "dequeue":
+		item, ok := s.sess.core.PopQueue()
+		if !ok {
+			return nil, nil
+		}
+		return []byte(item), nil
+	default:
+		for _, f := range sessionFileList {
+			if f.name == name {
+				return []byte(s.content(name)), nil
+			}
+		}
+		return nil, fmt.Errorf("%s: not found", name)
+	}
+}
+
+func (s *SessionFileStore) Put(name string, data []byte) error {
+	input := strings.TrimSpace(string(data))
+	if input == "" {
+		return nil
+	}
+	switch name {
+	case "prompt":
+		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
+		s.sess.trackMutable()
+		s.sess.mu.Lock()
+		s.sess.replyVers++
+		s.sess.mu.Unlock()
+
+	case "enqueue":
+		s.sess.core.Queue(input)
+
+	case "ctl":
+		return s.handleCtl(input)
+
+	case "backend":
+		if s.sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch backend while agent is running")
+		}
+		s.sess.core.Submit(s.sess.ctx, "/backend "+input, s.makePublish())
+		s.sess.mu.Lock()
+		s.sess.mutableVers["backend"].update(s.sess.core.BackendName())
+		s.sess.mutableVers["model"].update(s.sess.core.ModelName())
+		s.sess.mu.Unlock()
+
+	case "agent":
+		if s.sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch agent while agent is running")
+		}
+		s.sess.core.Submit(s.sess.ctx, "/agent "+input, s.makePublish())
+		s.sess.mu.Lock()
+		s.sess.mutableVers["agent"].update(s.sess.core.AgentName())
+		s.sess.mu.Unlock()
+
+	case "model":
+		if s.sess.core.IsRunning() {
+			return fmt.Errorf("cannot switch model while agent is running")
+		}
+		s.sess.core.Submit(s.sess.ctx, "/model "+input, s.makePublish())
+		s.sess.mu.Lock()
+		s.sess.mutableVers["model"].update(s.sess.core.ModelName())
+		s.sess.mu.Unlock()
+
+	case "cwd":
+		if err := s.sess.core.SetCWD(input); err != nil {
+			return err
+		}
+		s.sess.mu.Lock()
+		s.sess.mutableVers["cwd"].update(s.sess.core.CWD())
+		s.sess.mu.Unlock()
+	}
+	return nil
+}
+
+// content returns the string content of a simple readable session file.
+func (s *SessionFileStore) content(name string) string {
+	s.sess.mu.RLock()
+	defer s.sess.mu.RUnlock()
+	switch name {
+	case "backend":
+		return s.sess.core.BackendName() + "\n"
+	case "agent":
+		return s.sess.core.AgentName() + "\n"
+	case "model":
+		return s.sess.core.ModelName() + "\n"
+	case "state":
+		return s.sess.core.State() + "\n"
+	case "cwd":
+		return s.sess.core.CWD() + "\n"
+	case "usage":
+		return s.sess.core.Usage() + "\n"
+	case "ctxsz":
+		return s.sess.core.CtxSz() + "\n"
+	case "models":
+		return s.sess.core.ListModels() + "\n"
+	case "mcp":
+		return s.sess.core.ListServers() + "\n"
+	case "systemprompt":
+		return s.sess.core.SystemPrompt()
+	}
+	return ""
+}
+
+func (s *SessionFileStore) makePublish() func(agent.Event) {
+	assistantStarted := false
+	return func(ev agent.Event) {
+		switch ev.Role {
+		case "call", "tool", "newline":
+			assistantStarted = false
+		case "assistant":
+			if !assistantStarted {
+				s.sess.appendChat([]byte("assistant: "))
+				assistantStarted = true
+			}
+		}
+		s.sess.appendChat(formatEvent(ev))
+		s.sess.trackMutable()
+	}
+}
+
+func (s *SessionFileStore) handleCtl(input string) error {
+	cmd := strings.Fields(input)
+	if len(cmd) == 0 {
+		return fmt.Errorf("empty ctl command")
+	}
+	switch cmd[0] {
+	case "stop":
+		s.sess.core.Interrupt(agent.ErrInterrupted)
+	case "kill":
+		s.kill()
+	case "rn":
+		if name := strings.TrimSpace(input[3:]); name != "" {
+			if err := s.rename(name); err != nil {
+				fmt.Fprintf(os.Stderr, "olliesrv: rename: %v\n", err)
+			}
+		}
+	case "compact", "clear", "backend", "model", "models",
+		"agents", "agent", "sessions", "cwd", "skills",
+		"tools", "mcp", "context", "usage", "history",
+		"irw", "help":
+		s.sess.core.Submit(s.sess.ctx, "/"+input, s.makePublish())
+	default:
+		return fmt.Errorf("unknown ctl command: %s", cmd[0])
+	}
+	return nil
+}

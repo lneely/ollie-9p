@@ -47,7 +47,6 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
-	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 )
@@ -136,24 +135,31 @@ type Server struct {
 	mu          sync.RWMutex
 	sessions    map[string]*session
 	conns       []*connState
-	agentsDir   string
+	agentsDir   string // kept for session creation wiring
 	sessionsDir string
-	promptsDir  string
-	planDir     string // planning directory for /pl
-	memDir      string // memory directory for /m
+	agentStore  Store
+	promptStore ReadableStore
+	planStore   Store
+	memStore    Store
+	toolStore   Store
+	skillStore  Store
 }
 
 // New creates a new Server.
 func New() *Server {
 	memDir := defaultMemDir()
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
+	agentsDir := agent.DefaultAgentsDir()
 	return &Server{
 		sessions:    make(map[string]*session),
-		agentsDir:   agent.DefaultAgentsDir(),
+		agentsDir:   agentsDir,
 		sessionsDir: agent.DefaultSessionsDir(),
-		promptsDir:  agent.DefaultPromptsDir(),
-		planDir:     defaultPlanDir(),
-		memDir:      memDir,
+		agentStore:  NewFlatDirStore(agentsDir, 0644),
+		promptStore: NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
+		planStore:   NewFlatDirStore(defaultPlanDir(), 0644),
+		memStore:    NewFlatDirStore(memDir, 0644),
+		toolStore:   NewToolStore(),
+		skillStore:  NewSkillStore(),
 	}
 }
 
@@ -173,6 +179,21 @@ func defaultMemDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return home + "/.config/ollie/memory"
+}
+
+// sessionFileStore returns a SessionFileStore for the given session ID.
+func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
+	s.mu.RLock()
+	sess, ok := s.sessions[sessID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return NewSessionFileStore(
+		sess,
+		func() { s.killSession(sessID) },
+		func(newID string) error { return s.renameSession(sessID, newID) },
+	), true
 }
 
 // Serve handles a single 9P connection.
@@ -287,34 +308,27 @@ func (s *Server) pathType(path string) string {
 	case len(parts) == 1 && parts[0] == "help":
 		return "file"
 	case len(parts) == 2 && parts[0] == "a":
-		if _, err := os.Stat(s.agentsDir + "/" + parts[1]); err == nil {
+		if _, err := s.agentStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "p":
-		if _, err := os.Stat(s.promptsDir + "/" + parts[1]); err == nil {
+		if _, err := s.promptStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "m":
-		if _, err := os.Stat(s.memDir + "/" + parts[1]); err == nil {
+		if _, err := s.memStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "pl":
-		if _, err := os.Stat(s.planDir + "/" + parts[1]); err == nil {
+		if _, err := s.planStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "sk":
-		if parts[1] == "idx" {
-			return "file"
-		}
-		name := strings.TrimSuffix(parts[1], ".md")
-		if _, err := skills.Read(name); err == nil {
+		if _, err := s.skillStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "t":
-		if parts[1] == "idx" {
-			return "file"
-		}
-		if _, err := os.Stat(execute.ToolsPath() + "/" + parts[1]); err == nil {
+		if _, err := s.toolStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "s":
@@ -457,38 +471,23 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// (e.g. touch) produces a real file.
 	switch f.path {
 	case "/a":
-		os.MkdirAll(s.agentsDir, 0755) //nolint:errcheck
-		if err := os.WriteFile(s.agentsDir+"/"+fc.Name, nil, 0644); err != nil {
-			return errFcall(fc, err.Error())
-		}
-	case "/p":
-		os.MkdirAll(s.promptsDir, 0755) //nolint:errcheck
-		if err := os.WriteFile(s.promptsDir+"/"+fc.Name, nil, 0644); err != nil {
+		if err := s.agentStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	case "/m":
-		os.MkdirAll(s.memDir, 0755) //nolint:errcheck
-		if err := os.WriteFile(s.memDir+"/"+fc.Name, nil, 0644); err != nil {
+		if err := s.memStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	case "/pl":
-		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
-		if err := os.WriteFile(s.planDir+"/"+fc.Name, nil, 0644); err != nil {
+		if err := s.planStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	case "/t":
-		dir := execute.ToolsPath()
-		os.MkdirAll(dir, 0755) //nolint:errcheck
-		if err := os.WriteFile(dir+"/"+fc.Name, nil, 0755); err != nil {
+		if err := s.toolStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	case "/sk":
-		name := strings.TrimSuffix(fc.Name, ".md")
-		dir := skills.Dirs()[0] + "/" + name
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return errFcall(fc, err.Error())
-		}
-		if err := os.WriteFile(dir+"/SKILL.md", nil, 0644); err != nil {
+		if err := s.skillStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 	}
@@ -514,16 +513,6 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if isDir {
 		data := s.readDir(path, fc.Offset, fc.Count)
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
-	}
-
-	// chat, reply, and dequeue are served from session state.
-	switch pathBase(path) {
-	case "chat":
-		return s.readChat(fc, path)
-	case "reply":
-		return s.readReply(fc, path)
-	case "dequeue":
-		return s.readDequeue(fc, path)
 	}
 
 	// s/new returns the session creation template.
@@ -564,209 +553,82 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return s.readSlice(fc, content)
 	}
 
-	// Agent config files are served from disk.
+	// Agent config files are served from the agent store.
 	if strings.HasPrefix(path, "/a/") {
-		content, err := os.ReadFile(s.agentsDir + "/" + pathBase(path))
+		content, err := s.agentStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
 		return s.readSlice(fc, content)
 	}
 
-	// Prompt files are served from disk.
+	// Prompt files are served from the prompt store.
 	if strings.HasPrefix(path, "/p/") {
-		content, err := os.ReadFile(s.promptsDir + "/" + pathBase(path))
+		content, err := s.promptStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
 		return s.readSlice(fc, content)
 	}
 
-	// Memory files are served from disk.
+	// Memory files are served from the memory store.
 	if strings.HasPrefix(path, "/m/") {
-		content, err := os.ReadFile(s.memDir + "/" + pathBase(path))
+		content, err := s.memStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
 		return s.readSlice(fc, content)
 	}
 
-	// Plan files are served from disk.
+	// Plan files are served from the plan store.
 	if strings.HasPrefix(path, "/pl/") {
-		content, err := os.ReadFile(s.planDir + "/" + pathBase(path))
+		content, err := s.planStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
 		return s.readSlice(fc, content)
 	}
 
-	// Skill files are served via pkg/skills (reads from disk each time).
+	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
-		if pathBase(path) == "idx" {
-			var sb strings.Builder
-			for _, m := range skills.List() {
-				fmt.Fprintf(&sb, "## %s\n", m.Name)
-				fmt.Fprintf(&sb, "description: %s\n", m.Description)
-				sb.WriteString("\n")
-			}
-			return s.readSlice(fc, []byte(sb.String()))
-		}
-		name := strings.TrimSuffix(pathBase(path), ".md")
-		content, err := skills.Read(name)
+		content, err := s.skillStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
 		return s.readSlice(fc, content)
 	}
 
-	// Tool files are served from the tools path.
+	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
-		if pathBase(path) == "idx" {
-			toolsPath := execute.ToolsPath()
-			entries, err := os.ReadDir(toolsPath)
+		content, err := s.toolStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+
+	// Session files: /s/{id}/{file}
+	if strings.HasPrefix(path, "/s/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+		if len(parts) == 3 {
+			store, ok := s.sessionFileStore(parts[1])
+			if !ok {
+				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+			}
+			// dequeue: non-zero offset is the trailing EOF read after a successful pop.
+			if parts[2] == "dequeue" && fc.Offset > 0 {
+				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+			}
+			content, err := store.Get(parts[2])
 			if err != nil {
 				return errFcall(fc, err.Error())
 			}
-			var sb strings.Builder
-			for _, e := range entries {
-				if e.IsDir() || e.Name() == "idx" {
-					continue
-				}
-				data, err := os.ReadFile(toolsPath + "/" + e.Name())
-				if err != nil {
-					continue
-				}
-				var desc, args string
-				for line := range strings.SplitSeq(string(data), "\n") {
-					if d, ok := strings.CutPrefix(line, "# description:"); ok {
-						desc = strings.TrimSpace(d)
-					} else if a, ok := strings.CutPrefix(line, "# Args:"); ok {
-						args = strings.TrimSpace(a)
-					} else if a, ok := strings.CutPrefix(line, "# args:"); ok {
-						args = strings.TrimSpace(a)
-					}
-					if !strings.HasPrefix(line, "#") && line != "" {
-						break
-					}
-				}
-				if desc == "" {
-					continue
-				}
-				fmt.Fprintf(&sb, "## %s\n", e.Name())
-				fmt.Fprintf(&sb, "description: %s\n", desc)
-				if args != "" {
-					fmt.Fprintf(&sb, "args: %s\n", args)
-				}
-				sb.WriteString("\n")
-			}
-			return s.readSlice(fc, []byte(sb.String()))
+			return s.readSlice(fc, content)
 		}
-		content, err := os.ReadFile(execute.ToolsPath() + "/" + pathBase(path))
-		if err != nil {
-			return errFcall(fc, err.Error())
-		}
-		return s.readSlice(fc, content)
 	}
-
-	content := s.readFile(path)
-	var data []byte
-	off := int(fc.Offset)
-	if off < len(content) {
-		end := off + int(fc.Count)
-		if end > len(content) {
-			end = len(content)
-		}
-		data = []byte(content[off:end])
-	}
-	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 }
 
-// readChat serves bytes from the session's chatLog at the requested offset.
-// Returns 0 bytes when offset is at or past the current end (normal EOF);
-// tail -f detects growth via stat and re-reads from its last position.
-func (s *Server) readChat(fc *plan9.Fcall, path string) *plan9.Fcall {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-	if len(parts) != 3 || parts[0] != "s" {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	s.mu.RLock()
-	sess := s.sessions[parts[1]]
-	s.mu.RUnlock()
-	if sess == nil {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-
-	sess.mu.RLock()
-	log := sess.chatLog
-	sess.mu.RUnlock()
-
-	var data []byte
-	off := int(fc.Offset)
-	if off < len(log) {
-		end := off + int(fc.Count)
-		if end > len(log) {
-			end = len(log)
-		}
-		data = log[off:end]
-	}
-	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
-}
-
-// readDequeue pops the next queued prompt from the session's FIFO.
-// Only pops on offset==0; a non-zero offset signals the EOF read that
-// follows a successful read and must not consume another item.
-func (s *Server) readDequeue(fc *plan9.Fcall, path string) *plan9.Fcall {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-	if len(parts) != 3 || parts[0] != "s" {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	s.mu.RLock()
-	sess := s.sessions[parts[1]]
-	s.mu.RUnlock()
-	if sess == nil {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	// Non-zero offset is the trailing EOF read; don't pop another item.
-	if fc.Offset > 0 {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	item, ok := sess.core.PopQueue()
-	if !ok {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	data := []byte(item)
-	if uint32(len(data)) > fc.Count {
-		data = data[:fc.Count]
-	}
-	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
-}
-
-// readReply serves bytes from the session's reply buffer at the requested offset.
-func (s *Server) readReply(fc *plan9.Fcall, path string) *plan9.Fcall {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-	if len(parts) != 3 || parts[0] != "s" {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-	s.mu.RLock()
-	sess := s.sessions[parts[1]]
-	s.mu.RUnlock()
-	if sess == nil {
-		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
-	}
-
-	buf := []byte(sess.core.Reply())
-
-	var data []byte
-	off := int(fc.Offset)
-	if off < len(buf) {
-		end := off + int(fc.Count)
-		if end > len(buf) {
-			end = len(buf)
-		}
-		data = buf[off:end]
-	}
-	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
-}
 
 // readSlice serves a byte slice at the requested offset/count.
 func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
@@ -787,47 +649,6 @@ func (s *Server) helpPath() string {
 	return home + "/.config/ollie/help.md"
 }
 
-// readFile returns the text content for a readable session file.
-func (s *Server) readFile(path string) string {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-	if len(parts) != 3 || parts[0] != "s" {
-		return ""
-	}
-	sessID, fileName := parts[1], parts[2]
-
-	s.mu.RLock()
-	sess := s.sessions[sessID]
-	s.mu.RUnlock()
-	if sess == nil {
-		return ""
-	}
-
-	sess.mu.RLock()
-	defer sess.mu.RUnlock()
-	switch fileName {
-	case "backend":
-		return sess.core.BackendName() + "\n"
-	case "agent":
-		return sess.core.AgentName() + "\n"
-	case "model":
-		return sess.core.ModelName() + "\n"
-	case "state":
-		return sess.core.State() + "\n"
-	case "cwd":
-		return sess.core.CWD() + "\n"
-	case "usage":
-		return sess.core.Usage() + "\n"
-	case "ctxsz":
-		return sess.core.CtxSz() + "\n"
-	case "models":
-		return sess.core.ListModels() + "\n"
-	case "mcp":
-		return sess.core.ListServers() + "\n"
-	case "systemprompt":
-		return sess.core.SystemPrompt()
-	}
-	return ""
-}
 
 func (s *Server) write(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.Lock()
@@ -885,9 +706,7 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	switch {
 	case strings.HasPrefix(f.path, "/a/"):
-		oldPath := s.agentsDir + "/" + oldName
-		newPath := s.agentsDir + "/" + newDir.Name
-		if err := os.Rename(oldPath, newPath); err != nil {
+		if err := s.agentStore.Rename(oldName, newDir.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 		cs.mu.Lock()
@@ -896,9 +715,7 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		cs.mu.Unlock()
 
 	case strings.HasPrefix(f.path, "/m/"):
-		oldPath := s.memDir + "/" + oldName
-		newPath := s.memDir + "/" + newDir.Name
-		if err := os.Rename(oldPath, newPath); err != nil {
+		if err := s.memStore.Rename(oldName, newDir.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 		cs.mu.Lock()
@@ -907,13 +724,29 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		cs.mu.Unlock()
 
 	case strings.HasPrefix(f.path, "/pl/"):
-		oldPath := s.planDir + "/" + oldName
-		newPath := s.planDir + "/" + newDir.Name
-		if err := os.Rename(oldPath, newPath); err != nil {
+		if err := s.planStore.Rename(oldName, newDir.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
 		cs.mu.Lock()
 		f.path = "/pl/" + newDir.Name
+		f.qid.Path = qidPath(f.path)
+		cs.mu.Unlock()
+
+	case strings.HasPrefix(f.path, "/sk/"):
+		if err := s.skillStore.Rename(oldName, newDir.Name); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		cs.mu.Lock()
+		f.path = "/sk/" + newDir.Name
+		f.qid.Path = qidPath(f.path)
+		cs.mu.Unlock()
+
+	case strings.HasPrefix(f.path, "/t/"):
+		if err := s.toolStore.Rename(oldName, newDir.Name); err != nil {
+			return errFcall(fc, err.Error())
+		}
+		cs.mu.Lock()
+		f.path = "/t/" + newDir.Name
 		f.qid.Path = qidPath(f.path)
 		cs.mu.Unlock()
 
@@ -1039,23 +872,15 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	var err error
 	switch {
 	case strings.HasPrefix(path, "/a/"):
-		err = os.Remove(s.agentsDir + "/" + pathBase(path))
-	case strings.HasPrefix(path, "/p/"):
-		err = os.Remove(s.promptsDir + "/" + pathBase(path))
+		err = s.agentStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/m/"):
-		err = os.Remove(s.memDir + "/" + pathBase(path))
+		err = s.memStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/pl/"):
-		err = os.Remove(s.planDir + "/" + pathBase(path))
+		err = s.planStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/sk/"):
-		name := strings.TrimSuffix(pathBase(path), ".md")
-		for _, m := range skills.List() {
-			if m.Name == name {
-				err = os.RemoveAll(m.Dir)
-				break
-			}
-		}
+		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
-		err = os.Remove(execute.ToolsPath() + "/" + pathBase(path))
+		err = s.toolStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/s/") && path != "/s/new":
 		s.killSession(pathBase(path))
 	default:
@@ -1079,166 +904,41 @@ func (s *Server) handleWrite(path, input string) error {
 		return s.handleNewSession(input)
 	}
 
-	// Prompt file writes go directly to disk.
-	if strings.HasPrefix(path, "/p/") {
-		return os.WriteFile(s.promptsDir+"/"+pathBase(path), []byte(input), 0644)
-	}
-
-	// Agent config writes go directly to disk.
+	// Agent config writes go to the agent store.
 	if strings.HasPrefix(path, "/a/") {
-		return os.WriteFile(s.agentsDir+"/"+pathBase(path), []byte(input), 0644)
+		return s.agentStore.Put(pathBase(path), []byte(input))
 	}
 
-	// Memory file writes go directly to disk.
+	// Memory file writes go to the memory store.
 	if strings.HasPrefix(path, "/m/") {
-		os.MkdirAll(s.memDir, 0755) //nolint:errcheck
-		dest := s.memDir + "/" + pathBase(path)
-		return os.WriteFile(dest, []byte(input), 0644)
+		return s.memStore.Put(pathBase(path), []byte(input))
 	}
 
-	// Plan file writes go directly to disk.
+	// Plan file writes go to the plan store.
 	if strings.HasPrefix(path, "/pl/") {
-		os.MkdirAll(s.planDir, 0755) //nolint:errcheck
-		return os.WriteFile(s.planDir+"/"+pathBase(path), []byte(input), 0644)
+		return s.planStore.Put(pathBase(path), []byte(input))
 	}
 
-	// Skill file writes: create skill directory and write SKILL.md.
+	// Skill file writes go to the skill store.
 	if strings.HasPrefix(path, "/sk/") {
-		name := strings.TrimSuffix(pathBase(path), ".md")
-		dir := ""
-		for _, m := range skills.List() {
-			if m.Name == name {
-				dir = m.Dir
-				break
-			}
-		}
-		if dir == "" {
-			dir = skills.Dirs()[0] + "/" + name
-		}
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-		return os.WriteFile(dir+"/SKILL.md", []byte(input), 0644)
+		return s.skillStore.Put(pathBase(path), []byte(input))
 	}
 
-	// Tool file writes go directly to disk.
+	// Tool file writes go to the tool store.
 	if strings.HasPrefix(path, "/t/") {
-		return os.WriteFile(execute.ToolsPath()+"/"+pathBase(path), []byte(input), 0755)
+		return s.toolStore.Put(pathBase(path), []byte(input))
 	}
 
-	// Path format: /s/{sessid}/{file}
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-	if len(parts) != 3 || parts[0] != "s" {
-		return nil
-	}
-	sessID, fileName := parts[1], parts[2]
-
-	s.mu.RLock()
-	sess := s.sessions[sessID]
-	s.mu.RUnlock()
-	if sess == nil {
-		return fmt.Errorf("session not found: %s", sessID)
-	}
-
-	// assistantStarted tracks whether we've emitted the "assistant: " label
-	// for the current turn. Resets at turn boundaries so each response gets
-	// exactly one label regardless of how many streaming chunks arrive.
-	assistantStarted := false
-	publish := func(ev agent.Event) {
-		switch ev.Role {
-		case "call", "tool", "newline":
-			assistantStarted = false
-		case "assistant":
-			if !assistantStarted {
-				sess.appendChat([]byte("assistant: "))
-				assistantStarted = true
+	// Session file writes: /s/{sessid}/{file}
+	if strings.HasPrefix(path, "/s/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+		if len(parts) == 3 {
+			store, ok := s.sessionFileStore(parts[1])
+			if !ok {
+				return fmt.Errorf("session not found: %s", parts[1])
 			}
+			return store.Put(parts[2], []byte(input))
 		}
-		sess.appendChat(formatEvent(ev))
-		sess.trackMutable()
-	}
-
-	switch fileName {
-	case "prompt":
-		sess.core.Submit(sess.ctx, input, publish)
-		sess.trackMutable()
-		sess.mu.Lock()
-		sess.replyVers++
-		sess.mu.Unlock()
-		return nil
-
-	case "enqueue":
-		sess.core.Queue(input)
-		return nil
-
-	case "ctl":
-		cmd := strings.Fields(input)
-		if len(cmd) == 0 {
-			return fmt.Errorf("empty ctl command")
-		}
-		switch cmd[0] {
-		case "stop":
-			sess.core.Interrupt(agent.ErrInterrupted)
-		case "kill":
-			s.killSession(sessID)
-		case "rn":
-			if name := strings.TrimSpace(input[3:]); name != "" {
-				if err := s.renameSession(sessID, name); err != nil {
-					fmt.Fprintf(os.Stderr, "olliesrv: rename: %v\n", err)
-				}
-			}
-		case "compact", "clear", "backend", "model", "models",
-			"agents", "agent", "sessions", "cwd", "skills",
-			"tools", "mcp", "context", "usage", "history",
-			"irw", "help":
-			sess.core.Submit(sess.ctx, "/"+input, publish)
-		default:
-			return fmt.Errorf("unknown ctl command: %s", cmd[0])
-		}
-		return nil
-
-	case "backend":
-		if sess.core.IsRunning() {
-			return fmt.Errorf("cannot switch backend while agent is running")
-		}
-		sess.core.Submit(sess.ctx, "/backend "+input, publish)
-		sess.mu.Lock()
-		sess.mutableVers["backend"].update(sess.core.BackendName())
-		sess.mutableVers["model"].update(sess.core.ModelName())
-		sess.mu.Unlock()
-		return nil
-
-	case "agent":
-		if sess.core.IsRunning() {
-			return fmt.Errorf("cannot switch agent while agent is running")
-		}
-		sess.core.Submit(sess.ctx, "/agent "+input, publish)
-		sess.mu.Lock()
-		sess.mutableVers["agent"].update(sess.core.AgentName())
-		sess.mu.Unlock()
-		return nil
-
-	case "model":
-		if input == "" {
-			return fmt.Errorf("empty model name")
-		}
-		if sess.core.IsRunning() {
-			return fmt.Errorf("cannot switch model while agent is running")
-		}
-		sess.core.Submit(sess.ctx, "/model "+input, publish)
-		sess.mu.Lock()
-		sess.mutableVers["model"].update(sess.core.ModelName())
-		sess.mu.Unlock()
-		return nil
-
-	case "cwd":
-		if err := sess.core.SetCWD(input); err != nil {
-			return err
-		}
-		sess.mu.Lock()
-		sess.mutableVers["cwd"].update(sess.core.CWD())
-		sess.mu.Unlock()
-		return nil
 	}
 
 	return nil
@@ -1457,27 +1157,27 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("backends", "/backends", false, 0444))
 		dirs = append(dirs, makeDir("help", "/help", false, 0444))
 		dirs = append(dirs, makeDir("m", "/m", true, plan9.DMDIR|0755))
-		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0755))
+		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
 	} else if path == "/a" {
-		entries, _ := os.ReadDir(s.agentsDir)
+		entries, _ := s.agentStore.List()
 		for _, e := range entries {
 			if !e.IsDir() {
 				dirs = append(dirs, makeDir(e.Name(), "/a/"+e.Name(), false, 0666))
 			}
 		}
 	} else if path == "/p" {
-		entries, _ := os.ReadDir(s.promptsDir)
+		entries, _ := s.promptStore.List()
 		for _, e := range entries {
 			if !e.IsDir() {
 				dirs = append(dirs, makeDir(e.Name(), "/p/"+e.Name(), false, 0666))
 			}
 		}
 	} else if path == "/m" {
-		entries, _ := os.ReadDir(s.memDir)
+		entries, _ := s.memStore.List()
 		for _, e := range entries {
 			if !e.IsDir() {
 				d := makeDir(e.Name(), "/m/"+e.Name(), false, 0666)
@@ -1489,7 +1189,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			}
 		}
 	} else if path == "/pl" {
-		entries, _ := os.ReadDir(s.planDir)
+		entries, _ := s.planStore.List()
 		for _, e := range entries {
 			if !e.IsDir() {
 				d := makeDir(e.Name(), "/pl/"+e.Name(), false, 0666)
@@ -1501,18 +1201,22 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			}
 		}
 	} else if path == "/sk" {
-		dirs = append(dirs, makeDir("idx", "/sk/idx", false, 0444))
-		for _, m := range skills.List() {
-			name := m.Name + ".md"
-			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0666))
+		entries, _ := s.skillStore.List()
+		for _, e := range entries {
+			mode := plan9.Perm(0666)
+			if e.Name() == "idx" {
+				mode = 0444
+			}
+			dirs = append(dirs, makeDir(e.Name(), "/sk/"+e.Name(), false, mode))
 		}
 	} else if path == "/t" {
-		dirs = append(dirs, makeDir("idx", "/t/idx", false, 0444))
-		entries, _ := os.ReadDir(execute.ToolsPath())
+		entries, _ := s.toolStore.List()
 		for _, e := range entries {
-			if !e.IsDir() {
-				dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, 0777))
+			mode := plan9.Perm(0777)
+			if e.Name() == "idx" {
+				mode = 0444
 			}
+			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
 		}
 	} else if path == "/s" {
 		dirs = append(dirs, makeDir("new", "/s/new", false, 0666))
@@ -1523,32 +1227,14 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		}
 		s.mu.RUnlock()
 	} else {
-		// Session directory: path is /s/{sessid}
-		sessPath := path
-		type entry struct {
-			name string
-			mode plan9.Perm
-		}
-		files := []entry{
-			{"ctl", 0200},
-			{"prompt", 0200},
-			{"enqueue", 0200},
-			{"dequeue", 0444},
-			{"chat", 0444},
-			{"reply", 0444},
-			{"state", 0444},
-			{"backend", 0666},
-			{"agent", 0666},
-			{"model", 0666},
-			{"cwd", 0666},
-			{"usage", 0444},
-			{"ctxsz", 0444},
-			{"models", 0444},
-			{"mcp", 0444},
-			{"systemprompt", 0444},
-		}
-		for _, e := range files {
-			dirs = append(dirs, makeDir(e.name, sessPath+"/"+e.name, false, e.mode))
+		// Session subdirectory: /s/{sessid}
+		sessID := pathBase(path)
+		if store, ok := s.sessionFileStore(sessID); ok {
+			entries, _ := store.List()
+			for _, e := range entries {
+				info, _ := e.Info()
+				dirs = append(dirs, makeDir(e.Name(), path+"/"+e.Name(), false, plan9.Perm(info.Mode())))
+			}
 		}
 	}
 
@@ -1601,7 +1287,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/a" || path == "/m" || path == "/p" || path == "/pl" {
+		} else if path == "/a" || path == "/m" || path == "/pl" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1622,7 +1308,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			} else if strings.HasPrefix(path, "/a/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/p/") {
-				mode = 0666
+				mode = 0444
 			} else if strings.HasPrefix(path, "/m/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/pl/") {
@@ -1681,25 +1367,26 @@ func (s *Server) makeStat(path string) plan9.Dir {
 					if mf != nil && atomic.CompareAndSwapInt32(&mf.truncated, 1, 0) {
 						// Report size 0 once so tail -f detects truncation.
 						dir.Length = 0
-					} else {
-						content := s.readFile(path)
-						dir.Length = uint64(len(content))
+					} else if store, ok := s.sessionFileStore(parts[1]); ok {
+						if info, err := store.Stat(base); err == nil {
+							dir.Length = uint64(info.Size())
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// For memory and plan files, report real size and timestamps from disk.
+	// For memory and plan files, report real size and timestamps from the store.
 	if strings.HasPrefix(path, "/m/") {
-		if info, err := os.Stat(s.memDir + "/" + base); err == nil {
+		if info, err := s.memStore.Stat(base); err == nil {
 			dir.Length = uint64(info.Size())
 			dir.Atime = uint32(info.ModTime().Unix())
 			dir.Mtime = uint32(info.ModTime().Unix())
 		}
 	}
 	if strings.HasPrefix(path, "/pl/") {
-		if info, err := os.Stat(s.planDir + "/" + base); err == nil {
+		if info, err := s.planStore.Stat(base); err == nil {
 			dir.Length = uint64(info.Size())
 			dir.Atime = uint32(info.ModTime().Unix())
 			dir.Mtime = uint32(info.ModTime().Unix())
