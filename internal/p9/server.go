@@ -303,6 +303,9 @@ func (s *Server) pathType(path string) string {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "sk":
+		if parts[1] == "idx" {
+			return "file"
+		}
 		name := strings.TrimSuffix(parts[1], ".md")
 		if _, err := skills.Read(name); err == nil {
 			return "file"
@@ -599,6 +602,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Skill files are served via pkg/skills (reads from disk each time).
 	if strings.HasPrefix(path, "/sk/") {
+		if pathBase(path) == "idx" {
+			skillsPath := skills.Dirs()[0]
+			content, err := os.ReadFile(skillsPath + "/idx")
+			if err != nil {
+				return errFcall(fc, err.Error())
+			}
+			return s.readSlice(fc, content)
+		}
 		name := strings.TrimSuffix(pathBase(path), ".md")
 		content, err := skills.Read(name)
 		if err != nil {
@@ -1427,6 +1438,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			}
 		}
 	} else if path == "/sk" {
+		dirs = append(dirs, makeDir("idx", "/sk/idx", false, 0444))
 		for _, m := range skills.List() {
 			name := m.Name + ".md"
 			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0666))
@@ -1550,6 +1562,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/pl/") {
 				mode = 0666
+			} else if path == "/sk/idx" {
+				mode = 0444
 			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/t/") {
