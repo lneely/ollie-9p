@@ -1332,11 +1332,6 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
 
-	// Initialize clean tmpdir for this session.
-	sessTemp := "/tmp/ollie/" + sessID
-	os.RemoveAll(sessTemp)          //nolint:errcheck
-	os.MkdirAll(sessTemp, 0700)     //nolint:errcheck
-
 	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
 
 	// Inject per-session env vars into the execute server.
