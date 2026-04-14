@@ -12,15 +12,15 @@ ollie/
     <name>.json         r/w:   agent config; supports mv, cp, rm
   backends              read:  list of ollie-provided backends
   help                  read:  help file (backed by ~/.config/ollie/help.md)
-  p/                    dir:   prompt templates (r/w, backed by ~/.config/ollie/prompts/)
-    00_base.md          r/w:   tone, accuracy, task execution, environment
-    01_ollie.md         r/w:   session identity, filesystem layout, session lifecycle
-    02_reasoning.md     r/w:   reasoning instructions
-    03_memory.md        r/w:   memory instructions
-    04_task.md          r/w:   task planning instructions
-    05_edit-text.md     r/w:   text editing instructions
-    06_skills.md        r/w:   skill discovery and loading
-    07_tools.md         r/w:   tool script usage
+  p/                    dir:   prompt templates (read, backed by ~/.config/ollie/prompts/)
+    00_base.md          read:  tone, accuracy, task execution, environment
+    01_ollie.md         read:  session identity, filesystem layout, session lifecycle
+    02_reasoning.md     read:  reasoning instructions
+    03_memory.md        read:  memory instructions
+    04_task.md          read:  task planning instructions
+    05_edit-text.md     read:  text editing instructions
+    06_skills.md        read:  skill discovery and loading
+    07_tools.md         read:  tool script usage
 
   Prompt files are assembled in lexical order and rendered as Go templates at session
   start. Changes take effect the next time the system prompt is rebuilt: on new session
@@ -53,6 +53,24 @@ ollie/
 ```
 
 Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
+
+## Backing stores
+
+Each 9P directory endpoint is backed by a named store implementing one of the store interfaces (`ReadableStore`, `ReadWriteStore`, `BlobStore`, or `Store`). The server routes all filesystem operations through the store — it has no direct knowledge of what underlies it.
+
+| Path  | Default backing        | Interface       |
+|-------|------------------------|-----------------|
+| `/a`  | `FlatDirStore`         | `Store`         |
+| `/m`  | `FlatDirStore`         | `Store`         |
+| `/p`  | `FlatDirStore`         | `ReadableStore` |
+| `/pl` | `FlatDirStore`         | `Store`         |
+| `/sk` | `SkillStore`           | `Store`         |
+| `/t`  | `ToolStore`            | `Store`         |
+| `/s`  | `SessionStore`         | `Store`         |
+
+To swap a backing store (e.g. replace `/pl` with a vector database or `/m` with an object store), implement the appropriate interface and wire it in `New()`. The store interface requires only `Stat`, `List`, `Get`, `Put`, `Delete`, `Create`, and `Rename` — authentication, connection management, and credential rotation are internal concerns of the implementation.
+
+`SessionStore` is the exception: it holds live session state and is tightly coupled to the server's session lifecycle. Replacing it is possible in principle but requires understanding the session management internals.
 
 ## Building
 
