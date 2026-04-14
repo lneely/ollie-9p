@@ -1389,6 +1389,7 @@ func (s *Server) killSession(id string) {
 	s.mu.Unlock()
 	if sess != nil {
 		sess.cancel()
+		os.RemoveAll("/tmp/ollie/" + id) //nolint:errcheck
 		fmt.Fprintf(os.Stderr, "olliesrv: killed session %s\n", id)
 	}
 }
