@@ -11,6 +11,7 @@
 //	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
 //	        new             (r/w)   read: KV template; write: create session
+//	        idx             (read)  live index: name state cwd backend model (tab-separated)
 //	        {session-id}/           rm -r to kill session; mv to rename
 //	            ctl         (write) session control: stop, kill, rn, compact, clear
 //	            prompt      (write) submit a prompt to the agent
@@ -266,6 +267,8 @@ func (s *Server) pathType(path string) string {
 	case len(parts) == 1 && parts[0] == "s":
 		return "dir"
 	case len(parts) == 2 && parts[0] == "s" && parts[1] == "new":
+		return "file"
+	case len(parts) == 2 && parts[0] == "s" && parts[1] == "idx":
 		return "file"
 	case len(parts) == 1 && parts[0] == "a":
 		return "dir"
@@ -524,6 +527,23 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if path == "/s/new" {
 		content := []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n")
 		return s.readSlice(fc, content)
+	}
+
+	// s/idx is a live index of all sessions: name state cwd backend model.
+	if path == "/s/idx" {
+		var sb strings.Builder
+		s.mu.RLock()
+		for id, sess := range s.sessions {
+			sess.mu.RLock()
+			state := sess.core.State()
+			cwd := sess.core.CWD()
+			be := sess.core.BackendName()
+			model := sess.core.ModelName()
+			sess.mu.RUnlock()
+			fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\t%s\n", id, state, cwd, be, model)
+		}
+		s.mu.RUnlock()
+		return s.readSlice(fc, []byte(sb.String()))
 	}
 
 	// backends is a static list of ollie-provided backends.
@@ -1420,6 +1440,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		}
 	} else if path == "/s" {
 		dirs = append(dirs, makeDir("new", "/s/new", false, 0666))
+		dirs = append(dirs, makeDir("idx", "/s/idx", false, 0444))
 		s.mu.RLock()
 		for id := range s.sessions {
 			dirs = append(dirs, makeDir(id, "/s/"+id, true, plan9.DMDIR|0555))
@@ -1517,7 +1538,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "cwd":
 			mode = 0666
 		default:
-			if path == "/backends" || path == "/help" {
+			if path == "/backends" || path == "/help" || path == "/s/idx" {
 				mode = 0444
 			} else if path == "/s/new" {
 				mode = 0666
