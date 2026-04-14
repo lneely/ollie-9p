@@ -1532,6 +1532,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			{"ctxsz", 0444},
 			{"models", 0444},
 			{"mcp", 0444},
+			{"systemprompt", 0444},
 		}
 		for _, e := range files {
 			dirs = append(dirs, makeDir(e.name, sessPath+"/"+e.name, false, e.mode))
