@@ -603,12 +603,13 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	// Skill files are served via pkg/skills (reads from disk each time).
 	if strings.HasPrefix(path, "/sk/") {
 		if pathBase(path) == "idx" {
-			skillsPath := skills.Dirs()[0]
-			content, err := os.ReadFile(skillsPath + "/idx")
-			if err != nil {
-				return errFcall(fc, err.Error())
+			var sb strings.Builder
+			for _, m := range skills.List() {
+				fmt.Fprintf(&sb, "## %s\n", m.Name)
+				fmt.Fprintf(&sb, "description: %s\n", m.Description)
+				sb.WriteString("\n")
 			}
-			return s.readSlice(fc, content)
+			return s.readSlice(fc, []byte(sb.String()))
 		}
 		name := strings.TrimSuffix(pathBase(path), ".md")
 		content, err := skills.Read(name)
@@ -620,6 +621,46 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Tool files are served from the tools path.
 	if strings.HasPrefix(path, "/t/") {
+		if pathBase(path) == "idx" {
+			toolsPath := execute.ToolsPath()
+			entries, err := os.ReadDir(toolsPath)
+			if err != nil {
+				return errFcall(fc, err.Error())
+			}
+			var sb strings.Builder
+			for _, e := range entries {
+				if e.IsDir() || e.Name() == "idx" {
+					continue
+				}
+				data, err := os.ReadFile(toolsPath + "/" + e.Name())
+				if err != nil {
+					continue
+				}
+				var desc, args string
+				for line := range strings.SplitSeq(string(data), "\n") {
+					if d, ok := strings.CutPrefix(line, "# description:"); ok {
+						desc = strings.TrimSpace(d)
+					} else if a, ok := strings.CutPrefix(line, "# Args:"); ok {
+						args = strings.TrimSpace(a)
+					} else if a, ok := strings.CutPrefix(line, "# args:"); ok {
+						args = strings.TrimSpace(a)
+					}
+					if !strings.HasPrefix(line, "#") && line != "" {
+						break
+					}
+				}
+				if desc == "" {
+					continue
+				}
+				fmt.Fprintf(&sb, "## %s\n", e.Name())
+				fmt.Fprintf(&sb, "description: %s\n", desc)
+				if args != "" {
+					fmt.Fprintf(&sb, "args: %s\n", args)
+				}
+				sb.WriteString("\n")
+			}
+			return s.readSlice(fc, []byte(sb.String()))
+		}
 		content, err := os.ReadFile(execute.ToolsPath() + "/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
