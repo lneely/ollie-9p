@@ -172,7 +172,7 @@ func defaultMemDir() string {
 		return p
 	}
 	home, _ := os.UserHomeDir()
-	return home + "/.local/share/ollie/memory"
+	return home + "/.config/ollie/memory"
 }
 
 // Serve handles a single 9P connection.
