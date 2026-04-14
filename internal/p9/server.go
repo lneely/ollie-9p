@@ -49,7 +49,9 @@ import (
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 	"ollie/pkg/tools/file"
+	"ollie/pkg/tools/memory"
 	"ollie/pkg/tools/reasoning"
+	"ollie/pkg/tools/task"
 )
 
 const (
@@ -1186,7 +1188,9 @@ func (s *Server) createSession(args []string) error {
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute":   execute.Decl(cwd),
 		"file":      file.Decl(cwd),
+		"memory":    memory.Decl(),
 		"reasoning": reasoning.Decl(),
+		"task":      task.Decl(s.planDir),
 	})
 
 	sessID := name
@@ -1201,8 +1205,7 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
 
-	fallback := &filePlanBackend{dir: s.planDir}
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd, agent.WithFallbackPlanBackend(fallback))
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
 
 	// Inject per-session env vars into the execute server.
 	if srv, ok := env.Dispatcher().GetServer("execute"); ok {
