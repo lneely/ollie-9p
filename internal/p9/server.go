@@ -862,7 +862,15 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case strings.HasPrefix(path, "/t/"):
 		err = s.toolStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/s/") && path != "/s/new":
-		err = s.sessionStore.Delete(pathBase(path))
+		// If path is /s/{id}/{file}, it's a synthetic session file — no-op so
+		// that "rm -r s/{id}" can proceed to remove the directory itself, which
+		// triggers the actual session kill via Delete({id}).
+		parts := strings.SplitN(strings.TrimPrefix(path, "/s/"), "/", 2)
+		if len(parts) == 2 {
+			err = nil // synthetic file; let rm -r continue
+		} else {
+			err = s.sessionStore.Delete(parts[0])
+		}
 	default:
 		return errFcall(fc, "remove not supported")
 	}
