@@ -136,7 +136,7 @@ func runServer(sockPath, pidPath string) {
 	// Optional FUSE mount
 	mnt := *mountPath
 	if mnt == "" {
-		mnt = os.Getenv("OLLIE_9MOUNT")
+		mnt = os.Getenv("OLLIE")
 	}
 	if mnt == "" {
 		home, _ := os.UserHomeDir()
