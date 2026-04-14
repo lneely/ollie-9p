@@ -13,7 +13,19 @@ ollie/
   backends              read:  list of ollie-provided backends
   help                  read:  help file (backed by ~/.config/ollie/help.md)
   p/                    dir:   prompt templates (r/w, backed by ~/.config/ollie/prompts/)
-    SYSTEM_PROMPT.md    r/w:   the system prompt template
+    00_base.md          r/w:   tone, accuracy, task execution, environment
+    01_ollie.md         r/w:   session identity, filesystem layout, session lifecycle
+    02_reasoning.md     r/w:   reasoning instructions
+    03_memory.md        r/w:   memory instructions
+    04_task.md          r/w:   task planning instructions
+    05_edit-text.md     r/w:   text editing instructions
+    06_skills.md        r/w:   skill discovery and loading
+    07_tools.md         r/w:   tool script usage
+
+  Prompt files are assembled in lexical order and rendered as Go templates at session
+  start. Changes take effect the next time the system prompt is rebuilt: on new session
+  creation, `/cwd` change, or `/agent` switch.
+
   pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
     new                 r/w:   read: KV template; write: create session
