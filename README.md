@@ -31,6 +31,7 @@ ollie/
       prompt            write: submit a prompt to the agent
       reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)
+      systemprompt      read:  fully rendered system prompt for this session
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
       cwd               r/w:   working directory for tool execution and system prompt
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
