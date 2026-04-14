@@ -309,6 +309,9 @@ func (s *Server) pathType(path string) string {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "t":
+		if parts[1] == "idx" {
+			return "file"
+		}
 		if _, err := os.Stat(execute.ToolsPath() + "/" + parts[1]); err == nil {
 			return "file"
 		}
@@ -1493,6 +1496,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			dirs = append(dirs, makeDir(name, "/sk/"+name, false, 0666))
 		}
 	} else if path == "/t" {
+		dirs = append(dirs, makeDir("idx", "/t/idx", false, 0444))
 		entries, _ := os.ReadDir(execute.ToolsPath())
 		for _, e := range entries {
 			if !e.IsDir() {
@@ -1615,6 +1619,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				mode = 0444
 			} else if strings.HasPrefix(path, "/sk/") {
 				mode = 0666
+			} else if path == "/t/idx" {
+				mode = 0444
 			} else if strings.HasPrefix(path, "/t/") {
 				mode = 0777
 			} else {
