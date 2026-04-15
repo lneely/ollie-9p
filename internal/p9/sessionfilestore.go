@@ -216,7 +216,7 @@ func (s *SessionFileStore) handleCtl(input string) error {
 	case "rn":
 		if name := strings.TrimSpace(input[3:]); name != "" {
 			if err := s.rename(name); err != nil {
-				fmt.Fprintf(os.Stderr, "olliesrv: rename: %v\n", err)
+				plog.Error("rename: %v", err)
 			}
 		}
 	case "compact", "clear", "backend", "model", "models",
