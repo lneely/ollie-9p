@@ -104,7 +104,25 @@ func stopServer(sockPath, pidPath string) {
 	fmt.Println("olliesrv stopped")
 }
 
+func ensureEnv() {
+	home, _ := os.UserHomeDir()
+	defaults := map[string]string{
+		"OLLIE":             filepath.Join(home, "mnt", "ollie"),
+		"OLLIE_TOOLS_PATH":  filepath.Join(home, ".config", "ollie", "tools"),
+		"OLLIE_SKILLS_PATH": filepath.Join(home, ".config", "ollie", "skills"),
+		"OLLIE_PLAN_PATH":   filepath.Join(home, ".config", "ollie", "planning"),
+		"OLLIE_MEMORY_PATH": filepath.Join(home, ".config", "ollie", "memory"),
+	}
+	for k, v := range defaults {
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v) //nolint:errcheck
+		}
+	}
+}
+
 func runServer(sockPath, pidPath string) {
+	ensureEnv()
+
 	// Remove stale socket
 	if _, err := os.Stat(sockPath); err == nil {
 		os.Remove(sockPath) //nolint:errcheck
