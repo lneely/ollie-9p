@@ -228,6 +228,14 @@ func (s *Server) Serve(conn net.Conn) {
 	}
 }
 
+var debug = os.Getenv("OLLIE_9P_DEBUG") != ""
+
+func dbg(format string, args ...any) {
+	if debug {
+		fmt.Fprintf(os.Stderr, "9p: "+format+"\n", args...)
+	}
+}
+
 func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	switch fc.Type {
 	case plan9.Tversion:
@@ -235,10 +243,12 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if msize > 65536 {
 			msize = 65536
 		}
+		dbg("Tversion msize=%d", msize)
 		return &plan9.Fcall{Type: plan9.Rversion, Tag: fc.Tag, Msize: msize, Version: "9P2000"}
 	case plan9.Tauth:
 		return errFcall(fc, "no auth required")
 	case plan9.Tattach:
+		dbg("Tattach fid=%d", fc.Fid)
 		return s.attach(cs, fc)
 	case plan9.Twalk:
 		return s.walk(cs, fc)
@@ -398,6 +408,8 @@ func (s *Server) walk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rwalk, Tag: fc.Tag, Wqid: []plan9.Qid{}}
 	}
 
+	dbg("Twalk fid=%d newfid=%d from=%q wnames=%v", fc.Fid, fc.Newfid, f.path, fc.Wname)
+
 	wqids := make([]plan9.Qid, 0, len(fc.Wname))
 	cur := f.path
 
@@ -444,6 +456,7 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	f.mode = fc.Mode
+	dbg("Topen fid=%d path=%q mode=%d", fc.Fid, f.path, fc.Mode)
 	return &plan9.Fcall{Type: plan9.Ropen, Tag: fc.Tag, Qid: f.qid}
 }
 
@@ -460,8 +473,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	newPath := pathJoin(f.path, fc.Name)
-
-	// Actually create the file on disk so that even a no-write create
+	dbg("Tcreate parent=%q name=%q", f.path, fc.Name)
 	// (e.g. touch) produces a real file.
 	switch f.path {
 	case "/a":
@@ -505,27 +517,34 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.RUnlock()
 
 	if isDir {
+		dbg("Tread dir path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		data := s.readDir(path, fc.Offset, fc.Count)
+		dbg("Rread dir path=%q len=%d", path, len(data))
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
 	// s/new and s/idx are served from the session store.
 	if path == "/s/new" || path == "/s/idx" {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
+			dbg("Rread path=%q err=%v", path, err)
 			return errFcall(fc, err.Error())
 		}
+		dbg("Rread path=%q content_len=%d", path, len(content))
 		return s.readSlice(fc, content)
 	}
 
 	// backends is a static list of ollie-provided backends.
 	if path == "/backends" {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content := []byte(strings.Join(backend.Backends(), "\n") + "\n")
 		return s.readSlice(fc, content)
 	}
 
 	// help is served from ~/.config/ollie/help.md.
 	if path == "/help" {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := os.ReadFile(s.helpPath())
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -535,6 +554,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Agent config files are served from the agent store.
 	if strings.HasPrefix(path, "/a/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.agentStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -544,6 +564,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Prompt files are served from the prompt store.
 	if strings.HasPrefix(path, "/p/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.promptStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -553,6 +574,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Memory files are served from the memory store.
 	if strings.HasPrefix(path, "/m/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.memStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -562,6 +584,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Plan files are served from the plan store.
 	if strings.HasPrefix(path, "/pl/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.planStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -571,6 +594,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.skillStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -580,6 +604,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 
 	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
+		dbg("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.toolStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -591,8 +616,10 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if strings.HasPrefix(path, "/s/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 {
+			dbg("Tread session file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 			store, ok := s.sessionFileStore(parts[1])
 			if !ok {
+				dbg("Rread session not found: %s", parts[1])
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
 			// dequeue: non-zero offset is the trailing EOF read after a successful pop.
@@ -601,11 +628,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 			}
 			content, err := store.Get(parts[2])
 			if err != nil {
+				dbg("Rread session file err=%v", err)
 				return errFcall(fc, err.Error())
 			}
+			dbg("Rread session file path=%q content_len=%d", path, len(content))
 			return s.readSlice(fc, content)
 		}
 	}
+	dbg("Tread unhandled path=%q", path)
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 }
 
@@ -637,6 +667,7 @@ func (s *Server) write(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		cs.mu.Unlock()
 		return errFcall(fc, "bad fid")
 	}
+	dbg("Twrite fid=%d path=%q offset=%d len=%d", fc.Fid, f.path, fc.Offset, len(fc.Data))
 	// Accumulate; the 9P client may split large writes across multiple Twrite messages.
 	end := int(fc.Offset) + len(fc.Data)
 	if end > len(f.writeBuf) {
@@ -657,6 +688,7 @@ func (s *Server) stat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return errFcall(fc, "bad fid")
 	}
 	dir := s.makeStat(f.path)
+	dbg("Tstat path=%q mode=%o len=%d", f.path, dir.Mode, dir.Length)
 	stat, err := dir.Bytes()
 	if err != nil {
 		return errFcall(fc, err.Error())
@@ -680,6 +712,7 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	oldName := pathBase(f.path)
+	dbg("Twstat path=%q oldName=%q newName=%q", f.path, oldName, newDir.Name)
 	if newDir.Name == "" || newDir.Name == oldName {
 		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
 	}
@@ -814,12 +847,16 @@ func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 	cs.mu.Unlock()
 	if len(data) > 0 {
+		dbg("Tclunk flush path=%q writeBuf=%d", path, len(data))
 		input := strings.TrimSpace(string(data))
 		if s.isAsyncWrite(path) {
 			go s.handleWrite(path, input) //nolint:errcheck
 		} else if err := s.handleWrite(path, input); err != nil {
+			dbg("Tclunk handleWrite err=%v", err)
 			return errFcall(fc, err.Error())
 		}
+	} else {
+		dbg("Tclunk fid=%d path=%q (no write)", fc.Fid, path)
 	}
 	return &plan9.Fcall{Type: plan9.Rclunk, Tag: fc.Tag}
 }
@@ -849,6 +886,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	path := f.path
+	dbg("Tremove path=%q", path)
 	var err error
 	switch {
 	case strings.HasPrefix(path, "/a/"):
@@ -884,6 +922,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 // Called synchronously from clunk; prompt writes are the exception (spawned
 // as a goroutine because they block for the entire agent turn).
 func (s *Server) handleWrite(path, input string) error {
+	dbg("handleWrite path=%q input_len=%d", path, len(input))
 	if input == "" {
 		return nil
 	}
@@ -934,6 +973,7 @@ func (s *Server) handleWrite(path, input string) error {
 
 // handleNewSession parses KV pairs (one per line or space-separated) and creates a session.
 func (s *Server) handleNewSession(input string) error {
+	dbg("handleNewSession input=%q", input)
 	// Accept both newline-separated and space-separated KV pairs.
 	args := strings.Fields(input)
 	return s.createSession(args)
@@ -1380,6 +1420,39 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			dir.Length = uint64(info.Size())
 			dir.Atime = uint32(info.ModTime().Unix())
 			dir.Mtime = uint32(info.ModTime().Unix())
+		}
+	}
+
+	// For all other readable files, compute content length so clients
+	// that check stat before reading (cat, 9pfuse, etc.) see non-zero size.
+	if dir.Length == 0 && !isDir {
+		switch {
+		case path == "/s/new" || path == "/s/idx":
+			if content, err := s.sessionStore.Get(base); err == nil {
+				dir.Length = uint64(len(content))
+			}
+		case path == "/backends":
+			dir.Length = uint64(len(strings.Join(backend.Backends(), "\n") + "\n"))
+		case path == "/help":
+			if info, err := os.Stat(s.helpPath()); err == nil {
+				dir.Length = uint64(info.Size())
+			}
+		case strings.HasPrefix(path, "/a/"):
+			if info, err := s.agentStore.Stat(base); err == nil {
+				dir.Length = uint64(info.Size())
+			}
+		case strings.HasPrefix(path, "/p/"):
+			if info, err := s.promptStore.Stat(base); err == nil {
+				dir.Length = uint64(info.Size())
+			}
+		case strings.HasPrefix(path, "/sk/"):
+			if content, err := s.skillStore.Get(base); err == nil {
+				dir.Length = uint64(len(content))
+			}
+		case strings.HasPrefix(path, "/t/"):
+			if content, err := s.toolStore.Get(base); err == nil {
+				dir.Length = uint64(len(content))
+			}
 		}
 	}
 
