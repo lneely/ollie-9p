@@ -13,6 +13,7 @@ import (
 
 	"9fans.net/go/plan9/client"
 	p9 "olliesrv/internal/p9"
+	olog "ollie/pkg/log"
 )
 
 const serviceName = "ollie"
@@ -186,4 +187,5 @@ func runServer(sockPath, pidPath string) {
 	listener.Close() //nolint:errcheck
 	os.Remove(sockPath)
 	os.Remove(pidPath)
+	olog.Flush()
 }
