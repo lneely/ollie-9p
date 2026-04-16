@@ -104,9 +104,6 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 	}
 	switch name {
 	case "prompt":
-		s.sess.mu.Lock()
-		s.sess.chatOffset = len(s.sess.chatLog)
-		s.sess.mu.Unlock()
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
 		s.sess.trackMutable()
 
@@ -199,6 +196,11 @@ func (s *SessionFileStore) makePublish() func(agent.Event) {
 			}
 		}
 		s.sess.appendChat(formatEvent(ev))
+		if ev.Role == "user" {
+			s.sess.mu.Lock()
+			s.sess.chatOffset = len(s.sess.chatLog)
+			s.sess.mu.Unlock()
+		}
 		s.sess.trackMutable()
 	}
 }
