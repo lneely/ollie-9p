@@ -19,7 +19,6 @@ var sessionFileList = []struct {
 	{"enqueue", 0200},
 	{"dequeue", 0444},
 	{"chat", 0444},
-	{"reply", 0444},
 	{"state", 0444},
 	{"backend", 0666},
 	{"agent", 0666},
@@ -62,8 +61,6 @@ func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
 				s.sess.mu.RLock()
 				size = int64(len(s.sess.chatLog))
 				s.sess.mu.RUnlock()
-			case "reply":
-				size = int64(len(s.sess.core.Reply()))
 			default:
 				size = int64(len(s.content(name)))
 			}
@@ -81,8 +78,6 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 		copy(data, s.sess.chatLog)
 		s.sess.mu.RUnlock()
 		return data, nil
-	case "reply":
-		return []byte(s.sess.core.Reply()), nil
 	case "dequeue":
 		item, ok := s.sess.core.PopQueue()
 		if !ok {
@@ -108,9 +103,6 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 	case "prompt":
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
 		s.sess.trackMutable()
-		s.sess.mu.Lock()
-		s.sess.replyVers++
-		s.sess.mu.Unlock()
 
 	case "enqueue":
 		s.sess.core.Queue(input)

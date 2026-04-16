@@ -18,7 +18,6 @@
 //	            enqueue     (write) queue a prompt for later execution
 //	            dequeue     (read)  pop the next queued prompt
 //	            chat        (read)  cumulative chat history
-//	            reply       (read)  assistant text from the most recent turn
 //	            state       (read)  current agent state
 //	            backend     (r/w)   active backend name
 //	            agent       (r/w)   active agent name
@@ -86,8 +85,6 @@ type session struct {
 	// directly from this buffer by offset, so tail -f works via polling.
 	chatLog  []byte
 	chatVers uint32 // incremented on each append; used as Qid.Vers
-	// replyVers is incremented on each turn to drive Qid.Vers for polling.
-	replyVers uint32
 	// mutableVers tracks changes to tailable mutable-state files
 	// (state, backend, agent, model, usage, cwd). Bumped on change;
 	// reported via Qid.Vers in stat so tail -f detects truncation/rewrite.
@@ -145,6 +142,7 @@ type Server struct {
 	toolStore    Store
 	skillStore   Store
 	sessionStore Store
+	batchStore  *BatchStore
 }
 
 // New creates a new Server.
@@ -153,8 +151,8 @@ func New() *Server {
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
 	s := &Server{
-		sessions:    make(map[string]*session),
-		agentsDir:   agentsDir,
+		sessions:  make(map[string]*session),
+		agentsDir: agentsDir,
 		sessionsDir: agent.DefaultSessionsDir(),
 		agentStore:  NewFlatDirStore(agentsDir, 0644),
 		promptStore: NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
@@ -164,6 +162,7 @@ func New() *Server {
 		skillStore:  NewSkillStore(),
 	}
 	s.sessionStore = &SessionStore{srv: s}
+	s.batchStore = NewBatchStore(s)
 	return s
 }
 
@@ -314,6 +313,23 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "b":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "b":
+		switch parts[1] {
+		case "new", "idx":
+			return "file"
+		default:
+			if _, err := s.batchStore.Stat(parts[1]); err == nil {
+				return "dir"
+			}
+		}
+	case len(parts) == 3 && parts[0] == "b":
+		if js, ok := s.batchStore.JobStore(parts[1]); ok {
+			if _, err := js.Stat(parts[2]); err == nil {
+				return "file"
+			}
+		}
 	case len(parts) == 1 && parts[0] == "backends":
 		return "file"
 	case len(parts) == 1 && parts[0] == "help":
@@ -516,6 +532,31 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		data := s.readDir(path, fc.Offset, fc.Count)
 		plog.Debug("Rread dir path=%q len=%d", path, len(data))
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
+	}
+
+	// Batch job files: /b/new, /b/idx, /b/{id}/{file}
+	if path == "/b/new" || path == "/b/idx" {
+		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		content, err := s.batchStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+	if strings.HasPrefix(path, "/b/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+		if len(parts) == 3 && parts[0] == "b" {
+			plog.Debug("Tread batch file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+			js, ok := s.batchStore.JobStore(parts[1])
+			if !ok {
+				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+			}
+			content, err := js.Get(parts[2])
+			if err != nil {
+				return errFcall(fc, err.Error())
+			}
+			return s.readSlice(fc, content)
+		}
 	}
 
 	// s/new and s/idx are served from the session store.
@@ -894,6 +935,15 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
 		err = s.toolStore.Delete(pathBase(path))
+	case strings.HasPrefix(path, "/b/") && path != "/b/new":
+		// Synthetic batch files are no-ops so "rm -r b/{id}" can proceed to
+		// remove the directory itself, which triggers job cancellation.
+		parts := strings.SplitN(strings.TrimPrefix(path, "/b/"), "/", 2)
+		if len(parts) == 2 {
+			err = nil // synthetic file; let rm -r continue
+		} else {
+			err = s.batchStore.Delete(parts[0])
+		}
 	case strings.HasPrefix(path, "/s/") && path != "/s/new":
 		// If path is /s/{id}/{file}, it's a synthetic session file — no-op so
 		// that "rm -r s/{id}" can proceed to remove the directory itself, which
@@ -920,6 +970,10 @@ func (s *Server) handleWrite(path, input string) error {
 	plog.Debug("handleWrite path=%q input_len=%d", path, len(input))
 	if input == "" {
 		return nil
+	}
+
+	if path == "/b/new" {
+		return s.batchStore.Put("new", []byte(input))
 	}
 
 	if path == "/s/new" {
@@ -1100,7 +1154,7 @@ func (s *Server) createSession(args []string) error {
 	return nil
 }
 
-// Shutdown kills all active sessions, triggering Close() on each core.
+// Shutdown kills all active sessions and batch jobs, triggering Close() on each core.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.sessions))
@@ -1111,6 +1165,8 @@ func (s *Server) Shutdown() {
 	for _, id := range ids {
 		s.killSession(id)
 	}
+
+	s.batchStore.Shutdown()
 }
 
 func (s *Server) killSession(id string) {
@@ -1177,6 +1233,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 
 	if path == "/" {
 		dirs = append(dirs, makeDir("a", "/a", true, plan9.DMDIR|0755))
+		dirs = append(dirs, makeDir("b", "/b", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("backends", "/backends", false, 0444))
 		dirs = append(dirs, makeDir("help", "/help", false, 0444))
 		dirs = append(dirs, makeDir("m", "/m", true, plan9.DMDIR|0755))
@@ -1240,6 +1297,26 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 				mode = 0444
 			}
 			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
+		}
+	} else if path == "/b" {
+		entries, _ := s.batchStore.List()
+		for _, e := range entries {
+			isDir := e.IsDir()
+			info, _ := e.Info()
+			perm := plan9.Perm(info.Mode() & 0777)
+			if isDir {
+				perm = plan9.DMDIR | perm
+			}
+			dirs = append(dirs, makeDir(e.Name(), "/b/"+e.Name(), isDir, perm))
+		}
+	} else if strings.HasPrefix(path, "/b/") {
+		// /b/{id} directory listing
+		if js, ok := s.batchStore.JobStore(pathBase(path)); ok {
+			entries, _ := js.List()
+			for _, e := range entries {
+				info, _ := e.Info()
+				dirs = append(dirs, makeDir(e.Name(), path+"/"+e.Name(), false, plan9.Perm(info.Mode())))
+			}
 		}
 	} else if path == "/s" {
 		entries, _ := s.sessionStore.List()
@@ -1321,7 +1398,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt", "enqueue":
 			mode = 0200
-		case "chat", "reply", "state", "usage", "ctxsz", "models", "mcp", "dequeue":
+		case "chat", "state", "usage", "ctxsz", "models", "mcp", "dequeue":
 			mode = 0444
 		case "backend", "agent", "model", "cwd":
 			mode = 0666
@@ -1361,7 +1438,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		Muid: "ollie",
 	}
 
-	// For chat/reply and tailable mutable files, report actual size and
+	// For chat and tailable mutable files, report actual size and
 	// Qid version so polling tools (tail -f) can detect changes via stat.
 	// Path format: /s/{sessid}/{file}
 	if strings.HasPrefix(path, "/s/") {
@@ -1376,11 +1453,6 @@ func (s *Server) makeStat(path string) plan9.Dir {
 					sess.mu.RLock()
 					dir.Length = uint64(len(sess.chatLog))
 					dir.Qid.Vers = sess.chatVers
-					sess.mu.RUnlock()
-				case "reply":
-					sess.mu.RLock()
-					dir.Length = uint64(len(sess.core.Reply()))
-					dir.Qid.Vers = sess.replyVers
 					sess.mu.RUnlock()
 				default:
 					sess.mu.RLock()
@@ -1447,6 +1519,19 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case strings.HasPrefix(path, "/t/"):
 			if content, err := s.toolStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
+			}
+		case path == "/b/new" || path == "/b/idx":
+			if content, err := s.batchStore.Get(base); err == nil {
+				dir.Length = uint64(len(content))
+			}
+		case strings.HasPrefix(path, "/b/"):
+			parts := strings.SplitN(strings.TrimPrefix(path, "/b/"), "/", 2)
+			if len(parts) == 2 {
+				if js, ok := s.batchStore.JobStore(parts[0]); ok {
+					if info, err := js.Stat(parts[1]); err == nil {
+						dir.Length = uint64(info.Size())
+					}
+				}
 			}
 		}
 	}
