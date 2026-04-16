@@ -22,14 +22,14 @@ var mountPath = flag.String("mount", "", "FUSE mount path (default: $HOME/mnt/ol
 var tcpAddr = flag.String("tcp", "", "also listen on TCP address (e.g. :564)")
 
 func main() {
-	flag.Parse()
-
-	if flag.NArg() < 1 {
+	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: olliesrv <start|fgstart|stop|status|mount>")
 		os.Exit(1)
 	}
+	subcmd := os.Args[1]
+	flag.CommandLine.Parse(os.Args[2:]) //nolint:errcheck
 
-	switch flag.Arg(0) {
+	switch subcmd {
 	case "mount":
 		cmdMount()
 		return
@@ -44,7 +44,7 @@ func main() {
 	sockPath := filepath.Join(ns, serviceName)
 	pidPath := filepath.Join(ns, serviceName+".pid")
 
-	switch flag.Arg(0) {
+	switch subcmd {
 	case "start":
 		if isRunning(sockPath) {
 			fmt.Println("olliesrv already running")
@@ -73,12 +73,12 @@ func main() {
 }
 
 func cmdMount() {
-	if flag.NArg() < 2 {
+	if flag.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: olliesrv mount <address> [mountpoint]")
 		os.Exit(1)
 	}
-	addr := flag.Arg(1)
-	mnt := flag.Arg(2)
+	addr := flag.Arg(0)
+	mnt := flag.Arg(1)
 	if mnt == "" {
 		home, _ := os.UserHomeDir()
 		mnt = filepath.Join(home, "mnt", addr)
