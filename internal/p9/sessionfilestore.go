@@ -19,6 +19,7 @@ var sessionFileList = []struct {
 	{"enqueue", 0200},
 	{"dequeue", 0444},
 	{"chat", 0444},
+	{"offset", 0444},
 	{"state", 0444},
 	{"backend", 0666},
 	{"agent", 0666},
@@ -78,6 +79,8 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 		copy(data, s.sess.chatLog)
 		s.sess.mu.RUnlock()
 		return data, nil
+	case "offset":
+		return []byte(s.content("offset")), nil
 	case "dequeue":
 		item, ok := s.sess.core.PopQueue()
 		if !ok {
@@ -101,6 +104,9 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 	}
 	switch name {
 	case "prompt":
+		s.sess.mu.Lock()
+		s.sess.chatOffset = len(s.sess.chatLog)
+		s.sess.mu.Unlock()
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
 		s.sess.trackMutable()
 
@@ -174,6 +180,8 @@ func (s *SessionFileStore) content(name string) string {
 		return s.sess.core.ListServers() + "\n"
 	case "systemprompt":
 		return s.sess.core.SystemPrompt()
+	case "offset":
+		return fmt.Sprintf("%d\n", s.sess.chatOffset)
 	}
 	return ""
 }

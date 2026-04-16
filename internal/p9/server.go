@@ -83,8 +83,9 @@ type session struct {
 	cancel context.CancelFunc
 	// chatLog is an append-only record of the conversation. Reads are served
 	// directly from this buffer by offset, so tail -f works via polling.
-	chatLog  []byte
-	chatVers uint32 // incremented on each append; used as Qid.Vers
+	chatLog    []byte
+	chatVers   uint32 // incremented on each append; used as Qid.Vers
+	chatOffset int    // byte position of chat EOF immediately before last prompt submit
 	// mutableVers tracks changes to tailable mutable-state files
 	// (state, backend, agent, model, usage, cwd). Bumped on change;
 	// reported via Qid.Vers in stat so tail -f detects truncation/rewrite.
