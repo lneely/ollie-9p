@@ -17,7 +17,7 @@
 //	            prompt      (write) submit a prompt to the agent
 //	            enqueue     (write) queue a prompt for later execution
 //	            dequeue     (read)  pop the next queued prompt
-//	            chat        (read)  cumulative chat history
+//	            chat        (r/w)   cumulative chat history; write to save a transcript to tr/
 //	            state       (read)  current agent state
 //	            backend     (r/w)   active backend name
 //	            agent       (r/w)   active agent name
@@ -29,6 +29,7 @@
 //	            ctxsz       (read)  context size vs window
 //	    sk/                 (dir)   skills
 //	    t/                  (dir)   tool scripts
+//	    tr/                 (dir)   transcripts (ro; write to s/{id}/chat to save)
 package p9
 
 import (
@@ -41,6 +42,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"9fans.net/go/plan9"
 	"ollie/pkg/agent"
@@ -140,27 +142,31 @@ type Server struct {
 	promptStore ReadableStore
 	planStore   Store
 	memStore    Store
-	toolStore    Store
-	skillStore   Store
-	sessionStore Store
-	batchStore  *BatchStore
+	toolStore       Store
+	skillStore      Store
+	sessionStore    Store
+	batchStore      *BatchStore
+	transcriptStore Store
 }
 
 // New creates a new Server.
 func New() *Server {
 	memDir := defaultMemDir()
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
+	transcriptDir := defaultTranscriptDir()
+	os.MkdirAll(transcriptDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
 	s := &Server{
 		sessions:  make(map[string]*session),
 		agentsDir: agentsDir,
-		sessionsDir: agent.DefaultSessionsDir(),
-		agentStore:  NewFlatDirStore(agentsDir, 0644),
-		promptStore: NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
-		planStore:   NewFlatDirStore(defaultPlanDir(), 0644),
-		memStore:    NewFlatDirStore(memDir, 0644),
-		toolStore:   NewToolStore(),
-		skillStore:  NewSkillStore(),
+		sessionsDir:     agent.DefaultSessionsDir(),
+		agentStore:      NewFlatDirStore(agentsDir, 0644),
+		promptStore:     NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
+		planStore:       NewFlatDirStore(defaultPlanDir(), 0644),
+		memStore:        NewFlatDirStore(memDir, 0644),
+		toolStore:       NewToolStore(),
+		skillStore:      NewSkillStore(),
+		transcriptStore: NewFlatDirStore(transcriptDir, 0444),
 	}
 	s.sessionStore = &SessionStore{srv: s}
 	s.batchStore = NewBatchStore(s)
@@ -174,6 +180,15 @@ func defaultPlanDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return home + "/.config/ollie/planning"
+}
+
+// defaultTranscriptDir returns the transcript directory from OLLIE_TRANSCRIPT_PATH or the default.
+func defaultTranscriptDir() string {
+	if p := os.Getenv("OLLIE_TRANSCRIPT_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/transcript"
 }
 
 // defaultMemDir returns the memory directory from OLLIE_MEMORY_PATH or the default.
@@ -197,6 +212,10 @@ func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
 		sess,
 		func() { s.killSession(sessID) },
 		func(newID string) error { return s.renameSession(sessID, newID) },
+		func(data []byte) error {
+			name := time.Now().Format("20060102T150405") + "-chat.md"
+			return s.transcriptStore.Put(name, data)
+		},
 	), true
 }
 
@@ -314,6 +333,12 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
 		return "dir"
+	case len(parts) == 1 && parts[0] == "tr":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "tr":
+		if _, err := s.transcriptStore.Stat(parts[1]); err == nil {
+			return "file"
+		}
 	case len(parts) == 1 && parts[0] == "b":
 		return "dir"
 	case len(parts) == 2 && parts[0] == "b":
@@ -643,6 +668,16 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if strings.HasPrefix(path, "/t/") {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.toolStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+
+	// Transcript files are served from the transcript store.
+	if strings.HasPrefix(path, "/tr/") {
+		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		content, err := s.transcriptStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -1243,6 +1278,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
+		dirs = append(dirs, makeDir("tr", "/tr", true, plan9.DMDIR|0555))
 	} else if path == "/a" {
 		entries, _ := s.agentStore.List()
 		for _, e := range entries {
@@ -1298,6 +1334,18 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 				mode = 0444
 			}
 			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
+		}
+	} else if path == "/tr" {
+		entries, _ := s.transcriptStore.List()
+		for _, e := range entries {
+			if !e.IsDir() {
+				d := makeDir(e.Name(), "/tr/"+e.Name(), false, 0444)
+				if info, err := e.Info(); err == nil {
+					d.Atime = uint32(info.ModTime().Unix())
+					d.Mtime = uint32(info.ModTime().Unix())
+				}
+				dirs = append(dirs, d)
+			}
 		}
 	} else if path == "/b" {
 		entries, _ := s.batchStore.List()
@@ -1520,6 +1568,12 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case strings.HasPrefix(path, "/t/"):
 			if content, err := s.toolStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
+			}
+		case strings.HasPrefix(path, "/tr/"):
+			if info, err := s.transcriptStore.Stat(base); err == nil {
+				dir.Length = uint64(info.Size())
+				dir.Atime = uint32(info.ModTime().Unix())
+				dir.Mtime = uint32(info.ModTime().Unix())
 			}
 		case path == "/b/new" || path == "/b/idx":
 			if content, err := s.batchStore.Get(base); err == nil {

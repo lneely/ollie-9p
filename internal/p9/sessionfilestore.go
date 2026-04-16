@@ -18,7 +18,7 @@ var sessionFileList = []struct {
 	{"prompt", 0200},
 	{"enqueue", 0200},
 	{"dequeue", 0444},
-	{"chat", 0444},
+	{"chat", 0666},
 	{"offset", 0444},
 	{"state", 0444},
 	{"backend", 0666},
@@ -36,13 +36,14 @@ var sessionFileList = []struct {
 // session directory (/s/{id}/*). The file set is fixed; Create, Delete, and
 // Rename are not meaningful and are not part of the interface.
 type SessionFileStore struct {
-	sess   *session
-	kill   func()
-	rename func(newID string) error
+	sess           *session
+	kill           func()
+	rename         func(newID string) error
+	saveTranscript func([]byte) error
 }
 
-func NewSessionFileStore(sess *session, kill func(), rename func(newID string) error) *SessionFileStore {
-	return &SessionFileStore{sess: sess, kill: kill, rename: rename}
+func NewSessionFileStore(sess *session, kill func(), rename func(newID string) error, saveTranscript func([]byte) error) *SessionFileStore {
+	return &SessionFileStore{sess: sess, kill: kill, rename: rename, saveTranscript: saveTranscript}
 }
 
 func (s *SessionFileStore) List() ([]os.DirEntry, error) {
@@ -103,6 +104,9 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 		return nil
 	}
 	switch name {
+	case "chat":
+		return s.saveTranscript([]byte(input))
+
 	case "prompt":
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
 		s.sess.trackMutable()
@@ -221,6 +225,12 @@ func (s *SessionFileStore) handleCtl(input string) error {
 				plog.Error("rename: %v", err)
 			}
 		}
+	case "save":
+		s.sess.mu.RLock()
+		data := make([]byte, len(s.sess.chatLog))
+		copy(data, s.sess.chatLog)
+		s.sess.mu.RUnlock()
+		return s.saveTranscript(data)
 	case "compact", "clear", "backend", "model", "models",
 		"agents", "agent", "sessions", "cwd", "skills",
 		"tools", "mcp", "context", "usage", "history",
