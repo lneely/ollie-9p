@@ -26,6 +26,15 @@ ollie/
   start. Changes take effect the next time the system prompt is rebuilt: on new session
   creation, `/cwd` change, or `/agent` switch.
 
+  b/                    dir:   ephemeral one-shot batch jobs
+    new                 r/w:   read: KV template; write: submit a job spec
+    idx                 read:  job index (id, status, cwd, agent — one per line)
+    <job-id>/                  rm -r to cancel and remove
+      spec              read:  original job spec as submitted
+      status            read:  running | done | failed: <reason>
+      result            read:  assistant reply (populated when done)
+      usage             read:  token counts
+      ctxsz             read:  context size
   pl/                   dir:   plans
   s/                    dir:   one entry per active session, sorted by creation time
     new                 r/w:   read: KV template; write: create session
@@ -41,7 +50,6 @@ ollie/
       model             r/w:   active model name
       models            read:  available models from the backend
       prompt            write: submit a prompt to the agent
-      reply             read:  assistant text from the most recent turn only
       state             read:  current agent state (idle, thinking, calling: <tool>)
       systemprompt      read:  fully rendered system prompt for this session
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
@@ -61,6 +69,7 @@ Each 9P directory endpoint is backed by a named store implementing one of the st
 | Path  | Default backing        | Interface       |
 |-------|------------------------|-----------------|
 | `/a`  | `FlatDirStore`         | `Store`         |
+| `/b`  | `BatchStore`           | `Store`         |
 | `/m`  | `FlatDirStore`         | `Store`         |
 | `/p`  | `FlatDirStore`         | `ReadableStore` |
 | `/pl` | `FlatDirStore`         | `Store`         |
@@ -165,6 +174,65 @@ mv ~/mnt/ollie/s/<session-id> ~/mnt/ollie/s/my-friendly-name
 ```
 
 Rename is rejected if the agent is running or the target name already exists. All open file handles into the session are updated automatically.
+
+## Batch jobs
+
+`b/` provides ephemeral one-shot agent runs. Each job is a single prompt → single result with no persistent session state. Jobs run concurrently; each gets its own entry under `b/`.
+
+### Submit a job
+
+```sh
+cat ~/mnt/ollie/b/new                              # show the spec template
+```
+
+Write a spec to `b/new`:
+
+```
+name=my-job
+cwd=/home/lkn/src/myproject
+agent=default
+backend=anthropic
+model=claude-sonnet-4-6
+parallel=1
+---
+Summarize the top-level Go files in the current directory.
+```
+
+```sh
+printf 'name=my-job\ncwd=%s\n---\nSummarize this repo.\n' "$PWD" > ~/mnt/ollie/b/new
+```
+
+Valid header keys: `name` (optional; auto-generated if omitted), `cwd` (required), `agent`, `backend`, `model`, `output`, `parallel`.
+
+Setting `parallel=N` creates N independent jobs named `{name}-0` through `{name}-N-1`, all running the same prompt concurrently.
+
+### Poll and read results
+
+```sh
+cat ~/mnt/ollie/b/<job-id>/status      # running | done | failed: <reason>
+cat ~/mnt/ollie/b/<job-id>/result      # assistant reply (when done)
+cat ~/mnt/ollie/b/<job-id>/usage       # token counts
+cat ~/mnt/ollie/b/<job-id>/ctxsz       # context size
+cat ~/mnt/ollie/b/<job-id>/spec        # original spec
+cat ~/mnt/ollie/b/idx                  # all jobs: id status cwd agent
+```
+
+### Remove a job
+
+```sh
+rm -r ~/mnt/ollie/b/<job-id>           # cancel if running, then remove
+```
+
+### oq: shell wrapper
+
+The `oq` script (installed to `~/bin/oq`) wraps `b/` for one-liners:
+
+```sh
+oq "Summarize this repo"
+echo "what is 2+2?" | oq
+oq -parallel 4 -output json "List risks as JSON"
+oq -backend ollama -model qwen3:8b "Explain this function" < main.go
+```
 
 ## Agents
 
