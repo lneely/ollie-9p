@@ -224,6 +224,7 @@ func (s *BatchStore) runJob(ctx context.Context, job *batchJob) {
 		} else {
 			job.status = "failed: " + err.Error()
 		}
+		job.result = job.status
 		plog.Info("batch job %s failed: %v", job.id, err)
 		return
 	}
