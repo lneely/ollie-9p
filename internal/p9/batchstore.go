@@ -288,10 +288,13 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 		prompt += "\n\nRespond with valid JSON only, no prose."
 	}
 
-	var replyBuf strings.Builder
+	var replyBuf, errBuf strings.Builder
 	core.Submit(ctx, prompt, func(ev agent.Event) {
-		if ev.Role == "assistant" {
+		switch ev.Role {
+		case "assistant":
 			replyBuf.WriteString(ev.Content)
+		case "error":
+			errBuf.WriteString(ev.Content)
 		}
 	})
 
@@ -305,6 +308,9 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 
 	if ctx.Err() != nil {
 		return "", ctx.Err()
+	}
+	if errBuf.Len() > 0 {
+		return "", fmt.Errorf("%s", strings.TrimSpace(errBuf.String()))
 	}
 	return replyBuf.String(), nil
 }
