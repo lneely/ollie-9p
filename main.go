@@ -19,13 +19,20 @@ import (
 const serviceName = "ollie"
 
 var mountPath = flag.String("mount", "", "FUSE mount path (default: $HOME/mnt/ollie)")
+var tcpAddr = flag.String("tcp", "", "also listen on TCP address (e.g. :564)")
 
 func main() {
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: olliesrv <start|fgstart|stop|status>")
+		fmt.Fprintln(os.Stderr, "usage: olliesrv <start|fgstart|stop|status|mount>")
 		os.Exit(1)
+	}
+
+	switch flag.Arg(0) {
+	case "mount":
+		cmdMount()
+		return
 	}
 
 	ns := client.Namespace()
@@ -60,9 +67,34 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: olliesrv <start|fgstart|stop|status>")
+		fmt.Fprintln(os.Stderr, "usage: olliesrv <start|fgstart|stop|status|mount>")
 		os.Exit(1)
 	}
+}
+
+func cmdMount() {
+	if flag.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: olliesrv mount <address> [mountpoint]")
+		os.Exit(1)
+	}
+	addr := flag.Arg(1)
+	mnt := flag.Arg(2)
+	if mnt == "" {
+		home, _ := os.UserHomeDir()
+		mnt = filepath.Join(home, "mnt", addr)
+	}
+	if err := os.MkdirAll(mnt, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "cannot create mount dir: %v\n", err)
+		os.Exit(1)
+	}
+	cmd := exec.Command("9pfuse", addr, mnt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "9pfuse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("mounted %s at %s\n", addr, mnt)
 }
 
 func isRunning(sockPath string) bool {
@@ -79,6 +111,9 @@ func daemonize(pidPath string) {
 	args := []string{"fgstart"}
 	if *mountPath != "" {
 		args = append(args, "-mount", *mountPath)
+	}
+	if *tcpAddr != "" {
+		args = append(args, "-tcp", *tcpAddr)
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -152,6 +187,25 @@ func runServer(sockPath, pidPath string) {
 
 	fmt.Printf("olliesrv listening on %s\n", sockPath)
 
+	var tcpListener net.Listener
+	if *tcpAddr != "" {
+		tcpListener, err = net.Listen("tcp", *tcpAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tcp listen: %v\n", err)
+			os.Exit(1)
+		}
+		go func() {
+			for {
+				conn, err := tcpListener.Accept()
+				if err != nil {
+					return
+				}
+				go srv.Serve(conn)
+			}
+		}()
+		fmt.Printf("olliesrv listening on tcp %s\n", *tcpAddr)
+	}
+
 	// Optional FUSE mount
 	mnt := *mountPath
 	if mnt == "" {
@@ -185,6 +239,9 @@ func runServer(sockPath, pidPath string) {
 		fuseCmd.Wait()                               //nolint:errcheck
 	}
 	listener.Close() //nolint:errcheck
+	if tcpListener != nil {
+		tcpListener.Close() //nolint:errcheck
+	}
 	os.Remove(sockPath)
 	os.Remove(pidPath)
 	olog.Flush()
