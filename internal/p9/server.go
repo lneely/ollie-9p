@@ -971,6 +971,8 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
 		err = s.toolStore.Delete(pathBase(path))
+	case strings.HasPrefix(path, "/tr/"):
+		err = s.transcriptStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/b/") && path != "/b/new":
 		// Synthetic batch files are no-ops so "rm -r b/{id}" can proceed to
 		// remove the directory itself, which triggers job cancellation.
