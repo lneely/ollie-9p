@@ -148,7 +148,8 @@ func ensureEnv() {
 		"OLLIE_SKILLS_PATH": filepath.Join(home, ".config", "ollie", "skills"),
 		"OLLIE_PLAN_PATH":   filepath.Join(home, ".config", "ollie", "planning"),
 		"OLLIE_MEMORY_PATH": filepath.Join(home, ".config", "ollie", "memory"),
-		"OLLIE_TMP_PATH":    filepath.Join(home, ".local", "share", "ollie", "tmp"),
+		"OLLIE_TMP_PATH":        filepath.Join(home, ".local", "share", "ollie", "tmp"),
+		"OLLIE_TRANSCRIPT_PATH": filepath.Join(home, ".config", "ollie", "transcript"),
 	}
 	for k, v := range defaults {
 		if os.Getenv(k) == "" {

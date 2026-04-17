@@ -609,8 +609,8 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 	}
 
-	// s/new and s/idx are served from the session store.
-	if path == "/s/new" || path == "/s/idx" {
+	// s/new, s/idx, and s/ls are served from the session store.
+	if path == "/s/new" || path == "/s/idx" || path == "/s/ls" {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
@@ -1503,6 +1503,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		default:
 			if path == "/backends" || path == "/help" || path == "/s/idx" {
 				mode = 0444
+			} else if path == "/s/ls" {
+				mode = 0555
 			} else if path == "/s/new" {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/a/") {
@@ -1592,7 +1594,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	// that check stat before reading (cat, 9pfuse, etc.) see non-zero size.
 	if dir.Length == 0 && !isDir {
 		switch {
-		case path == "/s/new" || path == "/s/idx":
+		case path == "/s/new" || path == "/s/idx" || path == "/s/ls":
 			if content, err := s.sessionStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
