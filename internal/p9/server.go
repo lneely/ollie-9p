@@ -29,7 +29,7 @@
 //	            ctxsz       (read)  context size vs window
 //	    sk/                 (dir)   skills
 //	    t/                  (dir)   tool scripts
-//	    tmp/                (dir)   file-edit markers (r/w, backed by OLLIE_TMP_PATH)
+//	    tmp/                (dir)   tool dumping ground (r/w, backed by OLLIE_TMP_PATH)
 //	    tr/                 (dir)   transcripts (ro; write to s/{id}/chat to save)
 package p9
 
