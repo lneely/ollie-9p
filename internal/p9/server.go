@@ -50,6 +50,7 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	olog "ollie/pkg/log"
+	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 )
@@ -183,8 +184,7 @@ func defaultPlanDir() string {
 	if p := os.Getenv("OLLIE_PLAN_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/planning"
+	return paths.CfgDir() + "/planning"
 }
 
 // defaultTranscriptDir returns the transcript directory from OLLIE_TRANSCRIPT_PATH or the default.
@@ -192,8 +192,7 @@ func defaultTranscriptDir() string {
 	if p := os.Getenv("OLLIE_TRANSCRIPT_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/transcript"
+	return paths.CfgDir() + "/transcript"
 }
 
 // defaultMemDir returns the memory directory from OLLIE_MEMORY_PATH or the default.
@@ -201,8 +200,7 @@ func defaultMemDir() string {
 	if p := os.Getenv("OLLIE_MEMORY_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/memory"
+	return paths.CfgDir() + "/memory"
 }
 
 // defaultTmpDir returns the tmp directory from OLLIE_TMP_PATH or the default.
@@ -210,8 +208,7 @@ func defaultTmpDir() string {
 	if p := os.Getenv("OLLIE_TMP_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.local/share/ollie/tmp"
+	return paths.DataDir() + "/tmp"
 }
 
 // sessionFileStore returns a SessionFileStore for the given session ID.
@@ -761,8 +758,7 @@ func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
 }
 
 func (s *Server) helpPath() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/help.md"
+	return paths.CfgDir() + "/help.md"
 }
 
 
