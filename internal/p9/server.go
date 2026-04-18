@@ -42,7 +42,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"9fans.net/go/plan9"
@@ -60,23 +59,6 @@ const (
 	QTFile = plan9.QTFILE
 )
 
-// mutableFile tracks version and last-known value for a tailable session file.
-// Qid.Vers is bumped on change so tail -f detects rewrites via stat polling.
-// On change, truncated is set to 1 so the next stat reports Length 0,
-// causing tail to detect truncation and re-read from offset 0.
-type mutableFile struct {
-	vers      uint32
-	last      string
-	truncated int32 // atomic: 1 after change, cleared by stat
-}
-
-func (m *mutableFile) update(val string) {
-	if val != m.last {
-		m.last = val
-		m.vers++
-		atomic.StoreInt32(&m.truncated, 1)
-	}
-}
 
 // session holds all state for one ollie agent session.
 type session struct {
@@ -90,10 +72,6 @@ type session struct {
 	chatLog    []byte
 	chatVers   uint32 // incremented on each append; used as Qid.Vers
 	chatOffset int    // byte position of chat EOF immediately before last prompt submit
-	// mutableVers tracks changes to tailable mutable-state files
-	// (state, backend, agent, model, usage, cwd). Bumped on change;
-	// reported via Qid.Vers in stat so tail -f detects truncation/rewrite.
-	mutableVers map[string]*mutableFile
 }
 
 
@@ -105,17 +83,6 @@ func (sess *session) appendChat(data []byte) {
 	sess.mu.Lock()
 	sess.chatLog = append(sess.chatLog, data...)
 	sess.chatVers++
-	sess.mu.Unlock()
-}
-
-// trackMutable snapshots state and usage into their version trackers.
-// Called from the publish callback after each event.
-func (sess *session) trackMutable() {
-	state := sess.core.State()
-	usage := sess.core.Usage()
-	sess.mu.Lock()
-	sess.mutableVers["state"].update(state)
-	sess.mutableVers["usage"].update(usage)
 	sess.mu.Unlock()
 }
 
@@ -1203,14 +1170,6 @@ func (s *Server) createSession(args []string) error {
 		core:   core,
 		ctx:    ctx,
 		cancel: cancel,
-		mutableVers: map[string]*mutableFile{
-			"state":   {last: core.State()},
-			"backend": {last: core.BackendName()},
-			"agent":   {last: core.AgentName()},
-			"model":   {last: core.ModelName()},
-			"usage":   {last: core.Usage()},
-			"cwd": {last: core.CWD()},
-		},
 	}
 
 	s.mu.Lock()
@@ -1544,27 +1503,11 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			sess := s.sessions[parts[1]]
 			s.mu.RUnlock()
 			if sess != nil {
-				switch base {
-				case "chat":
+				if base == "chat" {
 					sess.mu.RLock()
 					dir.Length = uint64(len(sess.chatLog))
 					dir.Qid.Vers = sess.chatVers
 					sess.mu.RUnlock()
-				default:
-					sess.mu.RLock()
-					mf := sess.mutableVers[base]
-					if mf != nil {
-						dir.Qid.Vers = mf.vers
-					}
-					sess.mu.RUnlock()
-					if mf != nil && atomic.CompareAndSwapInt32(&mf.truncated, 1, 0) {
-						// Report size 0 once so tail -f detects truncation.
-						dir.Length = 0
-					} else if store, ok := s.sessionFileStore(parts[1]); ok {
-						if info, err := store.Stat(base); err == nil {
-							dir.Length = uint64(info.Size())
-						}
-					}
 				}
 			}
 		}

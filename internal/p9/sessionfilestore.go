@@ -112,7 +112,6 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 
 	case "prompt":
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
-		s.sess.trackMutable()
 
 	case "enqueue":
 		s.sess.core.Queue(input)
@@ -125,36 +124,23 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 			return fmt.Errorf("cannot switch backend while agent is running")
 		}
 		s.sess.core.Submit(s.sess.ctx, "/backend "+input, s.makePublish())
-		s.sess.mu.Lock()
-		s.sess.mutableVers["backend"].update(s.sess.core.BackendName())
-		s.sess.mutableVers["model"].update(s.sess.core.ModelName())
-		s.sess.mu.Unlock()
 
 	case "agent":
 		if s.sess.core.IsRunning() {
 			return fmt.Errorf("cannot switch agent while agent is running")
 		}
 		s.sess.core.Submit(s.sess.ctx, "/agent "+input, s.makePublish())
-		s.sess.mu.Lock()
-		s.sess.mutableVers["agent"].update(s.sess.core.AgentName())
-		s.sess.mu.Unlock()
 
 	case "model":
 		if s.sess.core.IsRunning() {
 			return fmt.Errorf("cannot switch model while agent is running")
 		}
 		s.sess.core.Submit(s.sess.ctx, "/model "+input, s.makePublish())
-		s.sess.mu.Lock()
-		s.sess.mutableVers["model"].update(s.sess.core.ModelName())
-		s.sess.mu.Unlock()
 
 	case "cwd":
 		if err := s.sess.core.SetCWD(input); err != nil {
 			return err
 		}
-		s.sess.mu.Lock()
-		s.sess.mutableVers["cwd"].update(s.sess.core.CWD())
-		s.sess.mu.Unlock()
 
 	case "params":
 		if s.sess.core.IsRunning() {
@@ -296,7 +282,6 @@ func (s *SessionFileStore) makePublish() func(agent.Event) {
 			s.sess.chatOffset = len(s.sess.chatLog)
 			s.sess.mu.Unlock()
 		}
-		s.sess.trackMutable()
 	}
 }
 
