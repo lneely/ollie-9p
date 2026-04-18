@@ -44,7 +44,6 @@ import (
 	"sync"
 	"time"
 
-	"9fans.net/go/plan9"
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
@@ -52,13 +51,14 @@ import (
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
+
+	"9fans.net/go/plan9"
 )
 
 const (
 	QTDir  = plan9.QTDIR
 	QTFile = plan9.QTFILE
 )
-
 
 // session holds all state for one ollie agent session.
 type session struct {
@@ -73,7 +73,6 @@ type session struct {
 	chatVers   uint32 // incremented on each append; used as Qid.Vers
 	chatOffset int    // byte position of chat EOF immediately before last prompt submit
 }
-
 
 // appendChat appends data to the session's chat log and bumps the Qid version.
 func (sess *session) appendChat(data []byte) {
@@ -102,15 +101,15 @@ type connState struct {
 
 // Server is the 9P server for ollie sessions.
 type Server struct {
-	mu          sync.RWMutex
-	sessions    map[string]*session
-	conns       []*connState
-	agentsDir   string // kept for session creation wiring
-	sessionsDir string
-	agentStore  Store
-	promptStore ReadableStore
-	planStore   Store
-	memStore    Store
+	mu              sync.RWMutex
+	sessions        map[string]*session
+	conns           []*connState
+	agentsDir       string // kept for session creation wiring
+	sessionsDir     string
+	agentStore      Store
+	promptStore     ReadableStore
+	planStore       Store
+	memStore        Store
 	toolStore       Store
 	skillStore      Store
 	sessionStore    Store
@@ -573,8 +572,8 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 	}
 
-	// s/new, s/idx, and s/ls are served from the session store.
-	if path == "/s/new" || path == "/s/idx" || path == "/s/ls" {
+	// s/new, s/idx, s/kill, and s/ls are served from the session store.
+	if path == "/s/new" || path == "/s/idx" || path == "/s/ls" || path == "/s/kill" {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
@@ -709,7 +708,6 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 }
 
-
 // readSlice serves a byte slice at the requested offset/count.
 func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
 	var data []byte
@@ -727,7 +725,6 @@ func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
 func (s *Server) helpPath() string {
 	return paths.CfgDir() + "/help.md"
 }
-
 
 func (s *Server) write(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.Lock()
@@ -1129,7 +1126,7 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute":   execute.Decl(cwd),
+		"execute": execute.Decl(cwd),
 	})
 
 	sessID := name
@@ -1207,8 +1204,6 @@ func (s *Server) killSession(id string) {
 		plog.Info("killed session %s", id)
 	}
 }
-
-
 
 // formatEvent converts an agent Event to bytes for appending to the chat log.
 // Output matches ollie-tui's MakeOutputFn so the chat file looks identical to
@@ -1458,7 +1453,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		default:
 			if path == "/backends" || path == "/help" || path == "/s/idx" {
 				mode = 0444
-			} else if path == "/s/ls" {
+			} else if path == "/s/ls" || path == "/s/kill" {
 				mode = 0555
 			} else if path == "/s/new" {
 				mode = 0666
@@ -1533,7 +1528,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	// that check stat before reading (cat, 9pfuse, etc.) see non-zero size.
 	if dir.Length == 0 && !isDir {
 		switch {
-		case path == "/s/new" || path == "/s/idx" || path == "/s/ls":
+		case path == "/s/new" || path == "/s/idx" || path == "/s/ls" || path == "/s/kill":
 			if content, err := s.sessionStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
