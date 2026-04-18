@@ -4,7 +4,26 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"ollie/pkg/paths"
 )
+
+// sessionStoreFiles maps fixed file entries in s/ to their permissions.
+// Add an entry here to expose a new file; the server uses this map for
+// routing, mode, and stat length.
+var sessionStoreFiles = map[string]os.FileMode{
+	"new":   0666,
+	"idx":   0444,
+	"ls":    0555,
+	"kill":  0555,
+	"sh":    0555,
+	"job":   0555,
+	"q":     0555,
+	"sched": 0555,
+}
+
+// sessionStoreOrder defines the listing order for fixed s/ entries.
+var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh", "job", "q", "sched"}
 
 // SessionStore implements Store for the /s/ directory.
 // Entries are session IDs (directories) plus the synthetic files "new" and "idx".
@@ -14,11 +33,9 @@ type SessionStore struct {
 }
 
 func (s *SessionStore) List() ([]os.DirEntry, error) {
-	entries := []os.DirEntry{
-		syntheticEntry("new", 0666),
-		syntheticEntry("idx", 0444),
-		syntheticEntry("ls", 0555),
-		syntheticEntry("kill", 0555),
+	entries := make([]os.DirEntry, 0, len(sessionStoreOrder))
+	for _, name := range sessionStoreOrder {
+		entries = append(entries, syntheticEntry(name, sessionStoreFiles[name]))
 	}
 	s.srv.mu.RLock()
 	for id := range s.srv.sessions {
@@ -29,15 +46,8 @@ func (s *SessionStore) List() ([]os.DirEntry, error) {
 }
 
 func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
-	switch name {
-	case "new":
-		return &syntheticFileInfo{name: "new", mode: 0666}, nil
-	case "idx":
-		return &syntheticFileInfo{name: "idx", mode: 0444}, nil
-	case "ls":
-		return &syntheticFileInfo{name: "ls", mode: 0555}, nil
-	case "kill":
-		return &syntheticFileInfo{name: "kill", mode: 0555}, nil
+	if mode, ok := sessionStoreFiles[name]; ok {
+		return &syntheticFileInfo{name: name, mode: mode}, nil
 	}
 	s.srv.mu.RLock()
 	_, ok := s.srv.sessions[name]
@@ -54,10 +64,8 @@ func (s *SessionStore) Get(name string) ([]byte, error) {
 		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
 	case "idx":
 		return s.index(), nil
-	case "ls":
-		return []byte("#!/usr/bin/env bash\ncat ${OLLIE}/s/idx\n"), nil
-	case "kill":
-		return []byte("#!/usr/bin/env bash\nrm -r ${OLLIE}/s/$1\n"), nil
+	case "ls", "kill", "sh", "job", "q", "sched":
+		return os.ReadFile(paths.CfgDir() + "/scripts/" + name)
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
 }

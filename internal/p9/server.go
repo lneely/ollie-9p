@@ -267,6 +267,17 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 }
 
+// isSessionStoreFile reports whether path is a fixed file directly under /s/
+// (i.e. /s/<name> where name is in sessionStoreFiles).
+func isSessionStoreFile(path string) bool {
+	name, ok := strings.CutPrefix(path, "/s/")
+	if !ok || strings.Contains(name, "/") {
+		return false
+	}
+	_, ok = sessionStoreFiles[name]
+	return ok
+}
+
 func errFcall(fc *plan9.Fcall, msg string) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rerror, Tag: fc.Tag, Ename: msg}
 }
@@ -572,8 +583,8 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 	}
 
-	// s/new, s/idx, s/kill, and s/ls are served from the session store.
-	if path == "/s/new" || path == "/s/idx" || path == "/s/ls" || path == "/s/kill" {
+	// Fixed files directly under /s/ are served from the session store.
+	if isSessionStoreFile(path) {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
@@ -1451,12 +1462,10 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "cwd":
 			mode = 0666
 		default:
-			if path == "/backends" || path == "/help" || path == "/s/idx" {
+			if path == "/backends" || path == "/help" {
 				mode = 0444
-			} else if path == "/s/ls" || path == "/s/kill" {
-				mode = 0555
-			} else if path == "/s/new" {
-				mode = 0666
+			} else if isSessionStoreFile(path) {
+				mode = plan9.Perm(sessionStoreFiles[base])
 			} else if strings.HasPrefix(path, "/a/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/p/") {
@@ -1528,7 +1537,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	// that check stat before reading (cat, 9pfuse, etc.) see non-zero size.
 	if dir.Length == 0 && !isDir {
 		switch {
-		case path == "/s/new" || path == "/s/idx" || path == "/s/ls" || path == "/s/kill":
+		case isSessionStoreFile(path):
 			if content, err := s.sessionStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
