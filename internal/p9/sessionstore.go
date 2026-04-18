@@ -58,7 +58,7 @@ func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
 func (s *SessionStore) Get(name string) ([]byte, error) {
 	switch name {
 	case "new":
-		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\nenv.NAME=\n"), nil
+		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
 	case "idx":
 		return s.index(), nil
 	default:

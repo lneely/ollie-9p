@@ -47,6 +47,7 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
+	"ollie/pkg/elevation"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
@@ -101,6 +102,7 @@ type connState struct {
 
 // Server is the 9P server for ollie sessions.
 type Server struct {
+	elevator        elevation.Elevator
 	mu              sync.RWMutex
 	sessions        map[string]*session
 	conns           []*connState
@@ -129,6 +131,7 @@ func New() *Server {
 	os.MkdirAll(tmpDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
 	s := &Server{
+		elevator:        elevation.Detect(),
 		sessions:        make(map[string]*session),
 		agentsDir:       agentsDir,
 		sessionsDir:     agent.DefaultSessionsDir(),
@@ -1106,18 +1109,12 @@ func (s *Server) createSession(args []string) error {
 	modelOverride := ""
 	agentName := "default"
 	cwd := ""
-	sessionEnv := map[string]string{}
-
 	for _, arg := range args {
 		k, v, ok := strings.Cut(arg, "=")
 		if !ok {
 			return fmt.Errorf("invalid option %q (expected key=value)", arg)
 		}
 		if v == "" {
-			continue
-		}
-		if envName, isEnv := strings.CutPrefix(k, "env."); isEnv {
-			sessionEnv[envName] = v
 			continue
 		}
 		switch k {
@@ -1132,7 +1129,7 @@ func (s *Server) createSession(args []string) error {
 		case "cwd":
 			cwd = v
 		default:
-			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd, env.<NAME>)", k)
+			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
 		}
 	}
 
@@ -1168,7 +1165,7 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(cwd),
+		"execute": execute.Decl(cwd, s.elevator),
 	})
 
 	sessID := name
@@ -1183,7 +1180,7 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
 
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd, sessionEnv)
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
@@ -1196,10 +1193,6 @@ func (s *Server) createSession(args []string) error {
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
-	for k, v := range sessionEnv {
-		core.SetEnv(k, v)
-	}
-
 	sess := &session{
 		id:     sessID,
 		core:   core,

@@ -33,7 +33,6 @@ var sessionFileList = []struct {
 	{"mcp", 0444},
 	{"systemprompt", 0444},
 	{"params", 0666},
-	{"env", 0200},
 }
 
 // SessionFileStore implements ReadWriteStore for the files within a single
@@ -152,15 +151,6 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 			return err
 		}
 		return s.sess.core.SetGenerationParams(params)
-
-	case "env":
-		for _, line := range strings.Split(string(data), "\n") {
-			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
-			if !ok || k == "" {
-				continue
-			}
-			s.sess.core.SetEnv(k, v)
-		}
 
 	}
 	return nil
