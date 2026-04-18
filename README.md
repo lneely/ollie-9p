@@ -112,6 +112,29 @@ The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`)
 
 ## Sessions
 
+### Interactive shell with s/sh
+
+`s/sh` is an interactive shell for prompting a session. It resumes the most recent session for the current working directory by default, or creates a new one if none exists.
+
+```sh
+exec $OLLIE/s/sh                               # resume or create session for pwd
+exec $OLLIE/s/sh -new                          # always start a fresh session
+exec $OLLIE/s/sh -new -model qwen3:8b          # fresh session with model override
+exec $OLLIE/s/sh -session 1744276689123456789-2b986c  # attach to a specific session
+```
+
+At the `> ` prompt:
+
+| Input | Action |
+|---|---|
+| `<text>` | Submit prompt; response streams to terminal |
+| `/q <text>` | Enqueue prompt for later execution |
+| `/<cmd>` | Send to session ctl (e.g. `/compact`, `/clear`, `/model qwen3:8b`) |
+| `/kill` | Kill the session and exit |
+| Ctrl-C | Interrupt a running turn (or exit if idle) |
+
+`s/sh` tracks the last session per working directory in `~/.config/ollie/last-session`, so switching directories and re-running `s/sh` resumes the right context automatically.
+
 ### Create a session
 
 ```sh
