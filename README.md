@@ -10,19 +10,20 @@ For usage examples, see [doc/USAGE.md](https://github.com/lneely/ollie/blob/main
 
 ```
 ollie/
-  a/                    dir:   agent configs (r/w, backed by ~/.config/ollie/agents/)
-    <name>.json         r/w:   agent config; supports mv, cp, rm
-  backends              read:  list of ollie-provided backends
-  help                  read:  help file (backed by ~/.config/ollie/help.md)
-  p/                    dir:   prompt templates (read, backed by ~/.config/ollie/prompts/)
-    00_base.md          read:  tone, accuracy, task execution, environment
-    01_ollie.md         read:  session identity, filesystem layout, session lifecycle
-    02_reasoning.md     read:  reasoning instructions
-    03_memory.md        read:  memory instructions
-    04_task.md          read:  task planning instructions
-    05_edit-text.md     read:  text editing instructions
-    06_skills.md        read:  skill discovery and loading
-    07_tools.md         read:  tool script usage
+  a/                         dir:   agent configs (r/w, backed by ~/.config/ollie/agents/)
+    <name>.json              r/w:   agent config; supports mv, cp, rm
+  backends                   read:  list of ollie-provided backends
+  help                       read:  help file (backed by ~/.config/ollie/help.md)
+  p/                         dir:   prompt templates (read, backed by ~/.config/ollie/prompts/)
+    00_base.md               read:  tone, accuracy, task execution, environment
+    01_ollie.md              read:  session identity, filesystem layout, session lifecycle
+    02_skills.md             read:  skill discovery and loading
+    03_tool-files.md         read:  text editing instructions
+    04_tool-reasoning.md     read:  reasoning instructions
+    05_tool-memory.md        read:  memory instructions
+    06_tool-plan.md          read:  task planning instructions
+    07_tool-subagents.md     read:  subagent usage
+    08_tool-elevate.md       read:  controlled escape from execute_code sandbox
 
   Prompt files are assembled in lexical order and rendered as Go templates at session
   start. Changes take effect the next time the system prompt is rebuilt: on new session
@@ -70,7 +71,7 @@ ollie/
     <script>            r/w:   tool script content
   u/                    dir:   utility scripts (read, backed by ~/.config/ollie/scripts/u/)
     <script>            exec:  utility script; compositions of b/ primitives
-  x/                    dir:   plugins (read, backed by ~/.config/ollie/scripts/x/)
+  x/                    dir:   system exec and plugins (read, backed by ~/.config/ollie/scripts/x/)
     <plugin>            exec:  server-invoked plugin (e.g. elevation backends)
 ```
 
