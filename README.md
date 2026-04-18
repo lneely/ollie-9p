@@ -26,9 +26,12 @@ ollie/
   start. Changes take effect the next time the system prompt is rebuilt: on new session
   creation, `/cwd` change, or `/agent` switch.
 
-  b/                    dir:   ephemeral one-shot batch jobs
+  b/                    dir:   batch jobs and job scripts
     new                 r/w:   read: KV template; write: submit a job spec
     idx                 read:  job index (id, status, cwd, agent — one per line)
+    job                 exec:  core batch job runner (submit, wait, print result)
+    q                   exec:  foreground one-shot query; thin wrapper around job
+    sched               exec:  submit background job; prints b/ path; wrapper around job
     <job-id>/                  rm -r to cancel and remove
       spec              read:  original job spec as submitted
       status            read:  running | done | failed: <reason>
@@ -36,8 +39,12 @@ ollie/
       usage             read:  token counts
       ctxsz             read:  context size
   pl/                   dir:   plans
-  s/                    dir:   one entry per active session, sorted by creation time
+  s/                    dir:   sessions and session management scripts
     new                 r/w:   read: KV template; write: create session
+    idx                 read:  session index (id, state, cwd, backend, model — one per line)
+    sh                  exec:  interactive chat shell
+    ls                  exec:  list active sessions
+    kill                exec:  kill a session by ID
     <session-id>/               rm -r to kill session; mv to rename
       agent             r/w:   active agent name
       backend           r/w:   active backend name
@@ -58,6 +65,8 @@ ollie/
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
     <script>            r/w:   tool script content
+  u/                    dir:   utility scripts (read, backed by ~/.config/ollie/scripts/u/)
+    <script>            exec:  utility script; compositions of b/ primitives
 ```
 
 Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
@@ -75,6 +84,7 @@ Each 9P directory endpoint is backed by a named store implementing one of the st
 | `/pl` | `FlatDirStore`         | `Store`         |
 | `/sk` | `SkillStore`           | `Store`         |
 | `/t`  | `ToolStore`            | `Store`         |
+| `/u`  | `UtilStore`            | `Store`         |
 | `/s`  | `SessionStore`         | `Store`         |
 
 To swap a backing store (e.g. replace `/pl` with a vector database or `/m` with an object store), implement the appropriate interface and wire it in `New()`. The store interface requires only `Stat`, `List`, `Get`, `Put`, `Delete`, `Create`, and `Rename` — authentication, connection management, and credential rotation are internal concerns of the implementation.
@@ -223,16 +233,19 @@ cat ~/mnt/ollie/b/idx                  # all jobs: id status cwd agent
 rm -r ~/mnt/ollie/b/<job-id>           # cancel if running, then remove
 ```
 
-### oq: shell wrapper
+### Shell wrappers
 
-The `oq` script (installed to `~/bin/oq`) wraps `b/` for one-liners:
+`b/job`, `b/q`, and `b/sched` are shell scripts that wrap the `b/` namespace for one-liners. They are exposed directly via the mounted filesystem:
 
 ```sh
-oq "Summarize this repo"
-echo "what is 2+2?" | oq
-oq -parallel 4 -output json "List risks as JSON"
-oq -backend ollama -model qwen3:8b "Explain this function" < main.go
+$OLLIE/b/job "Summarize this repo"           # submit, wait, print result
+echo "what is 2+2?" | $OLLIE/b/q            # foreground query via stdin
+$OLLIE/b/sched "Run a background task"       # submit and return b/ path
+$OLLIE/b/job -parallel 4 "Write a haiku"    # run N times concurrently
+$OLLIE/b/job -backend ollama -model qwen3:8b "Explain this" < main.go
 ```
+
+`b/q` is a thin wrapper around `b/job`. `b/sched` wraps `b/job -bg` and prints the `b/{id}` path for each submitted job.
 
 ## Agents
 
