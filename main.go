@@ -13,6 +13,7 @@ import (
 
 	"9fans.net/go/plan9/client"
 	p9 "olliesrv/internal/p9"
+	"ollie/pkg/env"
 	olog "ollie/pkg/log"
 )
 
@@ -140,26 +141,8 @@ func stopServer(sockPath, pidPath string) {
 	fmt.Println("olliesrv stopped")
 }
 
-func ensureEnv() {
-	home, _ := os.UserHomeDir()
-	defaults := map[string]string{
-		"OLLIE":             filepath.Join(home, "mnt", "ollie"),
-		"OLLIE_TOOLS_PATH":  filepath.Join(home, ".config", "ollie", "tools"),
-		"OLLIE_SKILLS_PATH": filepath.Join(home, ".config", "ollie", "skills"),
-		"OLLIE_PLAN_PATH":   filepath.Join(home, ".config", "ollie", "planning"),
-		"OLLIE_MEMORY_PATH": filepath.Join(home, ".config", "ollie", "memory"),
-		"OLLIE_TMP_PATH":        filepath.Join(home, ".local", "share", "ollie", "tmp"),
-		"OLLIE_TRANSCRIPT_PATH": filepath.Join(home, ".config", "ollie", "transcript"),
-	}
-	for k, v := range defaults {
-		if os.Getenv(k) == "" {
-			os.Setenv(k, v) //nolint:errcheck
-		}
-	}
-}
-
 func runServer(sockPath, pidPath string) {
-	ensureEnv()
+	env.EnsureDefaults()
 
 	// Remove stale socket
 	if _, err := os.Stat(sockPath); err == nil {
