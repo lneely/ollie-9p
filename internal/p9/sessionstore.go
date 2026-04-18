@@ -12,19 +12,16 @@ import (
 // Add an entry here to expose a new file; the server uses this map for
 // routing, mode, and stat length.
 var sessionStoreFiles = map[string]os.FileMode{
-	"new":      0666,
-	"idx":      0444,
-	"ls":       0555,
-	"kill":     0555,
-	"sh":       0555,
-	"job":      0555,
-	"q":        0555,
-	"sched":    0555,
-	"optimize": 0555,
+	"new": 0666,
+	"idx": 0444,
+	"ls":  0555,
+	"kill": 0555,
+	"sh":  0555,
+	"job": 0555,
 }
 
 // sessionStoreOrder defines the listing order for fixed s/ entries.
-var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh", "job", "q", "sched", "optimize"}
+var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh", "job"}
 
 // SessionStore implements Store for the /s/ directory.
 // Entries are session IDs (directories) plus the synthetic files "new" and "idx".
@@ -67,7 +64,7 @@ func (s *SessionStore) Get(name string) ([]byte, error) {
 		return s.index(), nil
 	default:
 		if _, ok := sessionStoreFiles[name]; ok {
-			return os.ReadFile(paths.CfgDir() + "/scripts/" + name)
+			return os.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
 		}
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
