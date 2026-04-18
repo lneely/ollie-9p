@@ -339,7 +339,7 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 2 && parts[0] == "b":
 		switch parts[1] {
-		case "new", "idx", "q", "sched":
+		case "new", "idx", "job", "q", "sched":
 			return "file"
 		default:
 			if _, err := s.batchStore.Stat(parts[1]); err == nil {
@@ -575,7 +575,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 		return s.readSlice(fc, content)
 	}
-	if path == "/b/q" || path == "/b/sched" {
+	if path == "/b/job" || path == "/b/q" || path == "/b/sched" {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := os.ReadFile(paths.CfgDir() + "/scripts/b/" + pathBase(path))
 		if err != nil {
@@ -1390,6 +1390,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			dirs = append(dirs, makeDir(e.Name(), "/u/"+e.Name(), false, 0555))
 		}
 	} else if path == "/b" {
+		dirs = append(dirs, makeDir("job", "/b/job", false, 0555))
 		dirs = append(dirs, makeDir("q", "/b/q", false, 0555))
 		dirs = append(dirs, makeDir("sched", "/b/sched", false, 0555))
 		entries, _ := s.batchStore.List()
@@ -1518,7 +1519,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				mode = 0777
 			} else if strings.HasPrefix(path, "/u/") {
 				mode = 0555
-			} else if path == "/b/q" || path == "/b/sched" {
+			} else if path == "/b/job" || path == "/b/q" || path == "/b/sched" {
 				mode = 0555
 			} else {
 				mode = 0444
@@ -1605,7 +1606,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			if content, err := s.utilStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
-		case path == "/b/q" || path == "/b/sched":
+		case path == "/b/job" || path == "/b/q" || path == "/b/sched":
 			if content, err := os.ReadFile(paths.CfgDir() + "/scripts/b/" + base); err == nil {
 				dir.Length = uint64(len(content))
 			}
