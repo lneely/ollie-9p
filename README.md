@@ -177,3 +177,36 @@ mv $OLLIE/s/<session-id> $OLLIE/s/my-friendly-name  # rename
 ```
 
 Rename is rejected if the agent is running or the target name already exists. All open file handles into the session are updated automatically.
+
+## Agents
+
+Agent configs live in `a/` and are backed by `~/.config/ollie/agents/`. They're plain JSON files.
+
+```sh
+ls $OLLIE/a/                                  # list agents
+cat $OLLIE/a/default.json                     # read config
+cp $OLLIE/a/default.json $OLLIE/a/yolo.json  # copy
+mv $OLLIE/a/old.json $OLLIE/a/new.json       # rename
+rm $OLLIE/a/scratch.json                      # delete
+```
+
+## Example shell session
+
+```sh
+$ echo "cwd=$PWD" > $OLLIE/s/new
+$ ls $OLLIE/s/
+new
+1744276689123456789-2b986c
+$ cd $OLLIE/s/1744276689123456789-2b986c
+$ tail -f chat &
+$ echo "list the go files in $PWD" > prompt
+user: list the go files in /home/lkn/src/ollie
+assistant: -> execute_code({"code":"find . -name '*.go'","language":"bash"})
+= pkg/agent/core.go
+  pkg/agent/loop.go
+  ...
+assistant: The Go source files are: core.go, loop.go, ...
+$ cat state
+idle
+$ mv $OLLIE/s/1744276689123456789-2b986c $OLLIE/s/ollie-demo
+```
