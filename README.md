@@ -70,6 +70,8 @@ ollie/
     <script>            r/w:   tool script content
   u/                    dir:   utility scripts (read, backed by ~/.config/ollie/scripts/u/)
     <script>            exec:  utility script; compositions of b/ primitives
+  x/                    dir:   plugins (read, backed by ~/.config/ollie/scripts/x/)
+    <plugin>            exec:  server-invoked plugin (e.g. elevation backends)
 ```
 
 Session IDs are Unix nanosecond timestamps with a random suffix (e.g. `1744276689123456789-2b986c`), so `ls s/` sorted lexicographically gives creation order.
@@ -88,6 +90,7 @@ Each 9P directory endpoint is backed by a named store implementing one of the st
 | `/sk` | `SkillStore`           | `Store`         |
 | `/t`  | `ToolStore`            | `Store`         |
 | `/u`  | `UtilStore`            | `Store`         |
+| `/x`  | `PluginStore`          | `Store`         |
 | `/s`  | `SessionStore`         | `Store`         |
 
 To swap a backing store (e.g. replace `/pl` with a vector database or `/m` with an object store), implement the appropriate interface and wire it in `New()`. The store interface requires only `Stat`, `List`, `Get`, `Put`, `Delete`, `Create`, and `Rename` — authentication, connection management, and credential rotation are internal concerns of the implementation.

@@ -31,6 +31,7 @@
 //	    t/                  (dir)   tool scripts
 //	    tmp/                (dir)   tool dumping ground (r/w, backed by OLLIE_TMP_PATH)
 //	    tr/                 (dir)   transcripts (ro; write to s/{id}/chat to save)
+//	    x/                  (dir)   plugins (ro, backed by ~/.config/ollie/scripts/x/)
 package p9
 
 import (
@@ -47,7 +48,6 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
-	"ollie/pkg/elevation"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
@@ -102,7 +102,6 @@ type connState struct {
 
 // Server is the 9P server for ollie sessions.
 type Server struct {
-	elevator        elevation.Elevator
 	mu              sync.RWMutex
 	sessions        map[string]*session
 	conns           []*connState
@@ -114,6 +113,7 @@ type Server struct {
 	memStore        Store
 	toolStore       Store
 	utilStore       Store
+	pluginStore     Store
 	skillStore      Store
 	sessionStore    Store
 	batchStore      *BatchStore
@@ -131,7 +131,6 @@ func New() *Server {
 	os.MkdirAll(tmpDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
 	s := &Server{
-		elevator:        elevation.Detect(),
 		sessions:        make(map[string]*session),
 		agentsDir:       agentsDir,
 		sessionsDir:     agent.DefaultSessionsDir(),
@@ -141,6 +140,7 @@ func New() *Server {
 		memStore:        NewFlatDirStore(memDir, 0644),
 		toolStore:       NewToolStore(),
 		utilStore:       NewUtilStore(),
+		pluginStore:     NewPluginStore(),
 		skillStore:      NewSkillStore(),
 		transcriptStore: NewFlatDirStore(transcriptDir, 0444),
 		tmpStore:        NewFlatDirStore(tmpDir, 0600),
@@ -330,6 +330,12 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 2 && parts[0] == "u":
 		if _, err := s.utilStore.Stat(parts[1]); err == nil {
+			return "file"
+		}
+	case len(parts) == 1 && parts[0] == "x":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "x":
+		if _, err := s.pluginStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 1 && parts[0] == "tr":
@@ -695,6 +701,16 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if strings.HasPrefix(path, "/u/") {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.utilStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+
+	// Plugin files are served from the plugin store.
+	if strings.HasPrefix(path, "/x/") {
+		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		content, err := s.pluginStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -1165,7 +1181,7 @@ func (s *Server) createSession(args []string) error {
 	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(cwd, s.elevator),
+		"execute": execute.Decl(cwd),
 	})
 
 	sessID := name
@@ -1297,6 +1313,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
 		dirs = append(dirs, makeDir("tmp", "/tmp", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("u", "/u", true, plan9.DMDIR|0755))
+		dirs = append(dirs, makeDir("x", "/x", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("tr", "/tr", true, plan9.DMDIR|0555))
 	} else if path == "/a" {
 		entries, _ := s.agentStore.List()
@@ -1382,6 +1399,11 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		entries, _ := s.utilStore.List()
 		for _, e := range entries {
 			dirs = append(dirs, makeDir(e.Name(), "/u/"+e.Name(), false, 0555))
+		}
+	} else if path == "/x" {
+		entries, _ := s.pluginStore.List()
+		for _, e := range entries {
+			dirs = append(dirs, makeDir(e.Name(), "/x/"+e.Name(), false, 0555))
 		}
 	} else if path == "/b" {
 		dirs = append(dirs, makeDir("job", "/b/job", false, 0555))
@@ -1514,6 +1536,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				mode = 0777
 			} else if strings.HasPrefix(path, "/u/") {
 				mode = 0555
+			} else if strings.HasPrefix(path, "/x/") {
+				mode = 0555
 			} else if path == "/b/job" || path == "/b/q" || path == "/b/sched" || path == "/b/cleanup" {
 				mode = 0555
 			} else {
@@ -1599,6 +1623,10 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			}
 		case strings.HasPrefix(path, "/u/"):
 			if content, err := s.utilStore.Get(base); err == nil {
+				dir.Length = uint64(len(content))
+			}
+		case strings.HasPrefix(path, "/x/"):
+			if content, err := s.pluginStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case path == "/b/job" || path == "/b/q" || path == "/b/sched" || path == "/b/cleanup":
