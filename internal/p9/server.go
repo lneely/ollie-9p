@@ -29,6 +29,7 @@
 //	            ctxsz       (read)  context size vs window
 //	    sk/                 (dir)   skills
 //	    t/                  (dir)   tool scripts
+//	    tmp/                (dir)   tool dumping ground (r/w, backed by OLLIE_TMP_PATH)
 //	    tr/                 (dir)   transcripts (ro; write to s/{id}/chat to save)
 package p9
 
@@ -49,6 +50,7 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	olog "ollie/pkg/log"
+	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 )
@@ -147,6 +149,7 @@ type Server struct {
 	sessionStore    Store
 	batchStore      *BatchStore
 	transcriptStore Store
+	tmpStore        Store
 }
 
 // New creates a new Server.
@@ -155,10 +158,12 @@ func New() *Server {
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
 	transcriptDir := defaultTranscriptDir()
 	os.MkdirAll(transcriptDir, 0755) //nolint:errcheck
+	tmpDir := defaultTmpDir()
+	os.MkdirAll(tmpDir, 0755) //nolint:errcheck
 	agentsDir := agent.DefaultAgentsDir()
 	s := &Server{
-		sessions:  make(map[string]*session),
-		agentsDir: agentsDir,
+		sessions:        make(map[string]*session),
+		agentsDir:       agentsDir,
 		sessionsDir:     agent.DefaultSessionsDir(),
 		agentStore:      NewFlatDirStore(agentsDir, 0644),
 		promptStore:     NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
@@ -167,6 +172,7 @@ func New() *Server {
 		toolStore:       NewToolStore(),
 		skillStore:      NewSkillStore(),
 		transcriptStore: NewFlatDirStore(transcriptDir, 0444),
+		tmpStore:        NewFlatDirStore(tmpDir, 0600),
 	}
 	s.sessionStore = &SessionStore{srv: s}
 	s.batchStore = NewBatchStore(s)
@@ -178,8 +184,7 @@ func defaultPlanDir() string {
 	if p := os.Getenv("OLLIE_PLAN_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/planning"
+	return paths.CfgDir() + "/planning"
 }
 
 // defaultTranscriptDir returns the transcript directory from OLLIE_TRANSCRIPT_PATH or the default.
@@ -187,8 +192,7 @@ func defaultTranscriptDir() string {
 	if p := os.Getenv("OLLIE_TRANSCRIPT_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/transcript"
+	return paths.CfgDir() + "/transcript"
 }
 
 // defaultMemDir returns the memory directory from OLLIE_MEMORY_PATH or the default.
@@ -196,8 +200,15 @@ func defaultMemDir() string {
 	if p := os.Getenv("OLLIE_MEMORY_PATH"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/memory"
+	return paths.CfgDir() + "/memory"
+}
+
+// defaultTmpDir returns the tmp directory from OLLIE_TMP_PATH or the default.
+func defaultTmpDir() string {
+	if p := os.Getenv("OLLIE_TMP_PATH"); p != "" {
+		return p
+	}
+	return paths.DataDir() + "/tmp"
 }
 
 // sessionFileStore returns a SessionFileStore for the given session ID.
@@ -355,6 +366,12 @@ func (s *Server) pathType(path string) string {
 			if _, err := js.Stat(parts[2]); err == nil {
 				return "file"
 			}
+		}
+	case len(parts) == 1 && parts[0] == "tmp":
+		return "dir"
+	case len(parts) == 2 && parts[0] == "tmp":
+		if _, err := s.tmpStore.Stat(parts[1]); err == nil {
+			return "file"
 		}
 	case len(parts) == 1 && parts[0] == "backends":
 		return "file"
@@ -529,6 +546,10 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err := s.toolStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
+	case "/tmp":
+		if err := s.tmpStore.Create(fc.Name); err != nil {
+			return errFcall(fc, err.Error())
+		}
 	case "/sk":
 		if err := s.skillStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
@@ -585,8 +606,8 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 	}
 
-	// s/new and s/idx are served from the session store.
-	if path == "/s/new" || path == "/s/idx" {
+	// s/new, s/idx, and s/ls are served from the session store.
+	if path == "/s/new" || path == "/s/idx" || path == "/s/ls" {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
@@ -674,6 +695,16 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return s.readSlice(fc, content)
 	}
 
+	// Tmp files are served from the tmp store.
+	if strings.HasPrefix(path, "/tmp/") {
+		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		content, err := s.tmpStore.Get(pathBase(path))
+		if err != nil {
+			return errFcall(fc, err.Error())
+		}
+		return s.readSlice(fc, content)
+	}
+
 	// Transcript files are served from the transcript store.
 	if strings.HasPrefix(path, "/tr/") {
 		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
@@ -727,8 +758,7 @@ func (s *Server) readSlice(fc *plan9.Fcall, content []byte) *plan9.Fcall {
 }
 
 func (s *Server) helpPath() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/help.md"
+	return paths.CfgDir() + "/help.md"
 }
 
 
@@ -892,13 +922,6 @@ func (s *Server) renameSession(oldID, newID string) error {
 		c.mu.Unlock()
 	}
 
-	// Rename the session tmpdir so isread markers remain valid.
-	oldTemp := "/tmp/ollie/" + oldID
-	newTemp := "/tmp/ollie/" + newID
-	if _, err := os.Stat(oldTemp); err == nil {
-		os.Rename(oldTemp, newTemp) //nolint:errcheck
-	}
-
 	sess.appendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
 	plog.Info("renamed session %s -> %s", oldID, newID)
 	return nil
@@ -971,6 +994,8 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
 		err = s.toolStore.Delete(pathBase(path))
+	case strings.HasPrefix(path, "/tmp/"):
+		err = s.tmpStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/tr/"):
 		err = s.transcriptStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/b/") && path != "/b/new":
@@ -1041,6 +1066,11 @@ func (s *Server) handleWrite(path, input string) error {
 	// Tool file writes go to the tool store.
 	if strings.HasPrefix(path, "/t/") {
 		return s.toolStore.Put(pathBase(path), []byte(input))
+	}
+
+	// Tmp file writes go to the tmp store.
+	if strings.HasPrefix(path, "/tmp/") {
+		return s.tmpStore.Put(pathBase(path), []byte(input))
 	}
 
 	// Session file writes: /s/{sessid}/{file}
@@ -1280,6 +1310,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
+		dirs = append(dirs, makeDir("tmp", "/tmp", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("tr", "/tr", true, plan9.DMDIR|0555))
 	} else if path == "/a" {
 		entries, _ := s.agentStore.List()
@@ -1336,6 +1367,18 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 				mode = 0444
 			}
 			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
+		}
+	} else if path == "/tmp" {
+		entries, _ := s.tmpStore.List()
+		for _, e := range entries {
+			if !e.IsDir() {
+				d := makeDir(e.Name(), "/tmp/"+e.Name(), false, 0600)
+				if info, err := e.Info(); err == nil {
+					d.Atime = uint32(info.ModTime().Unix())
+					d.Mtime = uint32(info.ModTime().Unix())
+				}
+				dirs = append(dirs, d)
+			}
 		}
 	} else if path == "/tr" {
 		entries, _ := s.transcriptStore.List()
@@ -1440,7 +1483,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/a" || path == "/m" || path == "/pl" {
+		} else if path == "/a" || path == "/m" || path == "/pl" || path == "/tmp" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1456,6 +1499,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		default:
 			if path == "/backends" || path == "/help" || path == "/s/idx" {
 				mode = 0444
+			} else if path == "/s/ls" {
+				mode = 0555
 			} else if path == "/s/new" {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/a/") {
@@ -1545,7 +1590,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	// that check stat before reading (cat, 9pfuse, etc.) see non-zero size.
 	if dir.Length == 0 && !isDir {
 		switch {
-		case path == "/s/new" || path == "/s/idx":
+		case path == "/s/new" || path == "/s/idx" || path == "/s/ls":
 			if content, err := s.sessionStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
 			}
@@ -1570,6 +1615,12 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case strings.HasPrefix(path, "/t/"):
 			if content, err := s.toolStore.Get(base); err == nil {
 				dir.Length = uint64(len(content))
+			}
+		case strings.HasPrefix(path, "/tmp/"):
+			if info, err := s.tmpStore.Stat(base); err == nil {
+				dir.Length = uint64(info.Size())
+				dir.Atime = uint32(info.ModTime().Unix())
+				dir.Mtime = uint32(info.ModTime().Unix())
 			}
 		case strings.HasPrefix(path, "/tr/"):
 			if info, err := s.transcriptStore.Stat(base); err == nil {

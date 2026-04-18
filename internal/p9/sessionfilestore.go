@@ -3,9 +3,11 @@ package p9
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"ollie/pkg/agent"
+	"ollie/pkg/backend"
 )
 
 // sessionFileList defines the fixed set of files in a session directory,
@@ -30,6 +32,7 @@ var sessionFileList = []struct {
 	{"models", 0444},
 	{"mcp", 0444},
 	{"systemprompt", 0444},
+	{"params", 0666},
 }
 
 // SessionFileStore implements ReadWriteStore for the files within a single
@@ -152,8 +155,94 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 		s.sess.mu.Lock()
 		s.sess.mutableVers["cwd"].update(s.sess.core.CWD())
 		s.sess.mu.Unlock()
+
+	case "params":
+		if s.sess.core.IsRunning() {
+			return fmt.Errorf("cannot change params while agent is running")
+		}
+		params, err := parseParams(input, s.sess.core.GenerationParams())
+		if err != nil {
+			return err
+		}
+		return s.sess.core.SetGenerationParams(params)
 	}
 	return nil
+}
+
+func formatParams(p backend.GenerationParams) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "maxTokens=%d\n", p.MaxTokens)
+	if p.Temperature != nil {
+		fmt.Fprintf(&sb, "temperature=%g\n", *p.Temperature)
+	} else {
+		fmt.Fprintf(&sb, "temperature=\n")
+	}
+	if p.FrequencyPenalty != nil {
+		fmt.Fprintf(&sb, "frequencyPenalty=%g\n", *p.FrequencyPenalty)
+	} else {
+		fmt.Fprintf(&sb, "frequencyPenalty=\n")
+	}
+	if p.PresencePenalty != nil {
+		fmt.Fprintf(&sb, "presencePenalty=%g\n", *p.PresencePenalty)
+	} else {
+		fmt.Fprintf(&sb, "presencePenalty=\n")
+	}
+	return sb.String()
+}
+
+func parseParams(input string, current backend.GenerationParams) (backend.GenerationParams, error) {
+	p := current
+	for _, line := range strings.Split(input, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		switch k {
+		case "maxTokens":
+			if v == "" {
+				p.MaxTokens = 0
+			} else {
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return p, fmt.Errorf("invalid maxTokens: %s", v)
+				}
+				p.MaxTokens = n
+			}
+		case "temperature":
+			if v == "" {
+				p.Temperature = nil
+			} else {
+				f, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return p, fmt.Errorf("invalid temperature: %s", v)
+				}
+				p.Temperature = &f
+			}
+		case "frequencyPenalty":
+			if v == "" {
+				p.FrequencyPenalty = nil
+			} else {
+				f, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return p, fmt.Errorf("invalid frequencyPenalty: %s", v)
+				}
+				p.FrequencyPenalty = &f
+			}
+		case "presencePenalty":
+			if v == "" {
+				p.PresencePenalty = nil
+			} else {
+				f, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return p, fmt.Errorf("invalid presencePenalty: %s", v)
+				}
+				p.PresencePenalty = &f
+			}
+		}
+	}
+	return p, nil
 }
 
 // content returns the string content of a simple readable session file.
@@ -183,6 +272,8 @@ func (s *SessionFileStore) content(name string) string {
 		return s.sess.core.SystemPrompt()
 	case "offset":
 		return fmt.Sprintf("%d\n", s.sess.chatOffset)
+	case "params":
+		return formatParams(s.sess.core.GenerationParams())
 	}
 	return ""
 }

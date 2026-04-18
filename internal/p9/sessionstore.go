@@ -17,6 +17,7 @@ func (s *SessionStore) List() ([]os.DirEntry, error) {
 	entries := []os.DirEntry{
 		syntheticEntry("new", 0666),
 		syntheticEntry("idx", 0444),
+		syntheticEntry("ls", 0555),
 	}
 	s.srv.mu.RLock()
 	for id := range s.srv.sessions {
@@ -32,6 +33,8 @@ func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
 		return &syntheticFileInfo{name: "new", mode: 0666}, nil
 	case "idx":
 		return &syntheticFileInfo{name: "idx", mode: 0444}, nil
+	case "ls":
+		return &syntheticFileInfo{name: "ls", mode: 0555}, nil
 	}
 	s.srv.mu.RLock()
 	_, ok := s.srv.sessions[name]
@@ -48,6 +51,8 @@ func (s *SessionStore) Get(name string) ([]byte, error) {
 		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
 	case "idx":
 		return s.index(), nil
+	case "ls":
+		return []byte("#!/usr/bin/env bash\ncat ${OLLIE:-$HOME/mnt/ollie}/s/idx\n"), nil
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
 }
