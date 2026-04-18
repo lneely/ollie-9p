@@ -247,6 +247,44 @@ $OLLIE/b/job -backend ollama -model qwen3:8b "Explain this" < main.go
 
 `b/q` is a thin wrapper around `b/job`. `b/sched` wraps `b/job -bg` and prints the `b/{id}` path for each submitted job.
 
+### Background jobs with b/sched
+
+`b/sched` submits a job and returns immediately, printing the `b/{id}` path for each job. Use it when you want to fire off work and check results later.
+
+```sh
+$OLLIE/b/sched "summarize the recent git log" > /tmp/job-path
+cat /tmp/job-path
+# /home/lkn/mnt/ollie/b/1744276689123456789-0
+```
+
+Poll for completion and read the result:
+
+```sh
+path=$($OLLIE/b/sched "write a limerick about Go")
+until [ "$(cat $path/status)" = "done" ]; do sleep 0.1; done
+cat $path/result
+```
+
+Submit multiple jobs in parallel with `-parallel N` — each gets its own path:
+
+```sh
+$OLLIE/b/sched -parallel 3 "generate a test case for this function" < main.go
+# /home/lkn/mnt/ollie/b/1744276689123456789-0
+# /home/lkn/mnt/ollie/b/1744276689123456789-1
+# /home/lkn/mnt/ollie/b/1744276689123456789-2
+```
+
+Fan out work and collect results when all are done:
+
+```sh
+paths=$($OLLIE/b/sched -parallel 4 "draft a blog intro" < brief.txt)
+for p in $paths; do
+    until [ "$(cat $p/status 2>/dev/null)" = "done" ]; do sleep 0.1; done
+    cat $p/result
+    rm -r $p
+done
+```
+
 ### AI pipelines
 
 Because `b/job` and `b/q` write results to stdout, they compose naturally with Unix pipes. Any tool that reads stdin and writes stdout is a pipeline stage.
