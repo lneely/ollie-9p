@@ -65,8 +65,10 @@ func (s *SessionStore) Get(name string) ([]byte, error) {
 		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
 	case "idx":
 		return s.index(), nil
-	case "ls", "kill", "sh", "job", "q", "sched":
-		return os.ReadFile(paths.CfgDir() + "/scripts/" + name)
+	default:
+		if _, ok := sessionStoreFiles[name]; ok {
+			return os.ReadFile(paths.CfgDir() + "/scripts/" + name)
+		}
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
 }
