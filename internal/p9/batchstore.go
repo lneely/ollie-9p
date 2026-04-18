@@ -271,7 +271,7 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),
 	})
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd, nil)
 
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
 		Backend:       be,

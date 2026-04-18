@@ -151,6 +151,7 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 			return err
 		}
 		return s.sess.core.SetGenerationParams(params)
+
 	}
 	return nil
 }

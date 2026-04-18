@@ -5,7 +5,6 @@
 //	ollie/
 //	    a/                  (dir)   agent configs (r/w, backed by ~/.config/ollie/agents/)
 //	    backends            (read)  list of ollie-provided backends
-//	    env                 (read)  daemon environment (NAME=VALUE lines)
 //	    help                (read)  help file (backed by ~/.config/ollie/help.md)
 //	    m/                  (dir)   memories (r/w, backed by OLLIE_MEMORY_PATH)
 //	    p/                  (dir)   prompt templates
@@ -48,7 +47,6 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
-	"ollie/pkg/env"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
@@ -362,8 +360,6 @@ func (s *Server) pathType(path string) string {
 		}
 	case len(parts) == 1 && parts[0] == "backends":
 		return "file"
-	case len(parts) == 1 && parts[0] == "env":
-		return "file"
 	case len(parts) == 1 && parts[0] == "help":
 		return "file"
 	case len(parts) == 2 && parts[0] == "a":
@@ -613,12 +609,6 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		}
 		plog.Debug("Rread path=%q content_len=%d", path, len(content))
 		return s.readSlice(fc, content)
-	}
-
-	// env exposes the daemon's managed environment variables to frontends.
-	if path == "/env" {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		return s.readSlice(fc, env.Format())
 	}
 
 	// backends is a static list of ollie-provided backends.
@@ -1116,6 +1106,7 @@ func (s *Server) createSession(args []string) error {
 	modelOverride := ""
 	agentName := "default"
 	cwd := ""
+	sessionEnv := map[string]string{}
 
 	for _, arg := range args {
 		k, v, ok := strings.Cut(arg, "=")
@@ -1123,6 +1114,10 @@ func (s *Server) createSession(args []string) error {
 			return fmt.Errorf("invalid option %q (expected key=value)", arg)
 		}
 		if v == "" {
+			continue
+		}
+		if envName, isEnv := strings.CutPrefix(k, "env."); isEnv {
+			sessionEnv[envName] = v
 			continue
 		}
 		switch k {
@@ -1137,7 +1132,7 @@ func (s *Server) createSession(args []string) error {
 		case "cwd":
 			cwd = v
 		default:
-			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
+			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd, env.<NAME>)", k)
 		}
 	}
 
@@ -1188,7 +1183,7 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
 
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd, sessionEnv)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	core := agent.NewAgentCore(agent.AgentCoreConfig{
@@ -1201,6 +1196,9 @@ func (s *Server) createSession(args []string) error {
 		Env:           env,
 		NewDispatcher: newDisp,
 	})
+	for k, v := range sessionEnv {
+		core.SetEnv(k, v)
+	}
 
 	sess := &session{
 		id:     sessID,
@@ -1297,7 +1295,6 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("a", "/a", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("b", "/b", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("backends", "/backends", false, 0444))
-		dirs = append(dirs, makeDir("env", "/env", false, 0444))
 		dirs = append(dirs, makeDir("help", "/help", false, 0444))
 		dirs = append(dirs, makeDir("m", "/m", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
@@ -1502,7 +1499,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		case "backend", "agent", "model", "cwd":
 			mode = 0666
 		default:
-			if path == "/backends" || path == "/env" || path == "/help" {
+			if path == "/backends" || path == "/help" {
 				mode = 0444
 			} else if isSessionStoreFile(path) {
 				mode = plan9.Perm(sessionStoreFiles[base])
