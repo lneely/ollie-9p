@@ -34,6 +34,7 @@ ollie/
     job                 exec:  core batch job runner (submit, wait, print result)
     q                   exec:  foreground one-shot query; thin wrapper around job
     sched               exec:  submit background job; prints b/ path; wrapper around job
+    cleanup             exec:  remove all jobs with status "done"
     <job-id>/                  rm -r to cancel and remove
       spec              read:  original job spec as submitted
       status            read:  running | done | failed: <reason>
