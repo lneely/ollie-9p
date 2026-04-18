@@ -111,3 +111,69 @@ olliesrv status      # check if running
 ```
 
 The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`) and optionally mounts via `9pfuse` to `$HOME/mnt/ollie` (or `$OLLIE`).
+
+## Sessions
+
+### Create
+
+```sh
+cat $OLLIE/s/new                    # show required/optional KV pairs
+echo "cwd=$PWD" > $OLLIE/s/new
+echo "cwd=$PWD backend=ollama model=qwen3:8b" > $OLLIE/s/new
+```
+
+Valid keys: `cwd` (required), `backend`, `model`, `agent`.
+
+### Send a prompt
+
+```sh
+echo "what files are in the current directory?" > $OLLIE/s/<session-id>/prompt
+```
+
+Writes dispatch asynchronously on close; the shell returns immediately.
+
+### Read the conversation
+
+```sh
+cat $OLLIE/s/<session-id>/chat          # full history snapshot
+tail -f $OLLIE/s/<session-id>/chat      # follow output as it arrives
+```
+
+### Check state
+
+```sh
+cat $OLLIE/s/<session-id>/state
+# idle | thinking | calling: <toolname>
+```
+
+### Control
+
+```sh
+echo stop    > $OLLIE/s/<session-id>/ctl   # interrupt current turn
+echo compact > $OLLIE/s/<session-id>/ctl   # summarize context
+echo clear   > $OLLIE/s/<session-id>/ctl   # clear history
+echo kill    > $OLLIE/s/<session-id>/ctl   # kill session
+echo "rn my-name" > $OLLIE/s/<session-id>/ctl
+echo "model qwen3:8b" > $OLLIE/s/<session-id>/ctl
+```
+
+`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `mcp`, `context`, `usage`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
+
+### Switch backend, model, or agent
+
+```sh
+echo ollama   > $OLLIE/s/<session-id>/backend
+echo qwen3:8b > $OLLIE/s/<session-id>/model
+echo myagent  > $OLLIE/s/<session-id>/agent
+```
+
+Writes to `backend`, `model`, and `agent` are rejected when the agent is not idle. Check `state` to confirm the change took effect.
+
+### Kill and rename
+
+```sh
+rm -r $OLLIE/s/<session-id>                          # kill
+mv $OLLIE/s/<session-id> $OLLIE/s/my-friendly-name  # rename
+```
+
+Rename is rejected if the agent is running or the target name already exists. All open file handles into the session are updated automatically.
