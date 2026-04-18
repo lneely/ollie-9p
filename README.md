@@ -247,6 +247,33 @@ $OLLIE/b/job -backend ollama -model qwen3:8b "Explain this" < main.go
 
 `b/q` is a thin wrapper around `b/job`. `b/sched` wraps `b/job -bg` and prints the `b/{id}` path for each submitted job.
 
+### AI pipelines
+
+Because `b/job` and `b/q` write results to stdout, they compose naturally with Unix pipes. Any tool that reads stdin and writes stdout is a pipeline stage.
+
+```sh
+echo "write a haiku about filesystems" | $OLLIE/b/q | wc -w
+cat error.log | $OLLIE/b/q "what is causing this error?" | $OLLIE/b/q "suggest a fix"
+```
+
+Multi-stage pipelines can chain LLM calls, shell transforms, and other tools:
+
+```sh
+$OLLIE/b/q "list 5 blog post ideas" | grep -v "^$" | head -3 | $OLLIE/b/q "expand the best one"
+```
+
+`u/optimize` is a worked example of a pipeline built on `b/q`. It generates N candidate prompts in parallel, then judges them to return the best:
+
+```sh
+$OLLIE/u/optimize -n 3 -cm qwen/qwen3-8b -jm anthropic/claude-opus-4-6 "explain recursion"
+```
+
+Internally, `u/optimize` calls `b/q -parallel N` for candidate generation and `b/q` again for judging — two LLM stages composed via shell variables, with stderr used for progress and stdout carrying the result. The output can be piped directly into another stage:
+
+```sh
+$OLLIE/u/optimize "translate this to Spanish" >[2]/dev/null | $OLLIE/b/q < input.txt
+```
+
 ## Agents
 
 Agent configs live in `a/` and are backed by `~/.config/ollie/agents/`. They're plain JSON files.
