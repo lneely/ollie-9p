@@ -8,7 +8,6 @@
 //	    help                (read)  help file (backed by ~/.config/ollie/help.md)
 //	    m/                  (dir)   memories (r/w, backed by OLLIE_MEMORY_PATH)
 //	    p/                  (dir)   prompt templates
-//	    pl/                 (dir)   plans
 //	    s/                  (dir)   session directory
 //	        new             (r/w)   read: KV template; write: create session
 //	        idx             (read)  live index: name state cwd backend model (tab-separated)
@@ -109,7 +108,6 @@ type Server struct {
 	sessionsDir     string
 	agentStore      Store
 	promptStore     ReadableStore
-	planStore       Store
 	memStore        Store
 	toolStore       Store
 	utilStore       Store
@@ -136,7 +134,6 @@ func New() *Server {
 		sessionsDir:     agent.DefaultSessionsDir(),
 		agentStore:      NewFlatDirStore(agentsDir, 0644),
 		promptStore:     NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
-		planStore:       NewFlatDirStore(defaultPlanDir(), 0644),
 		memStore:        NewFlatDirStore(memDir, 0644),
 		toolStore:       NewToolStore(),
 		utilStore:       NewUtilStore(),
@@ -150,13 +147,6 @@ func New() *Server {
 	return s
 }
 
-// defaultPlanDir returns the planning directory from OLLIE_PLAN_PATH or the default.
-func defaultPlanDir() string {
-	if p := os.Getenv("OLLIE_PLAN_PATH"); p != "" {
-		return p
-	}
-	return paths.CfgDir() + "/planning"
-}
 
 // defaultTranscriptDir returns the transcript directory from OLLIE_TRANSCRIPT_PATH or the default.
 func defaultTranscriptDir() string {
@@ -320,8 +310,6 @@ func (s *Server) pathType(path string) string {
 		return "dir"
 	case len(parts) == 1 && parts[0] == "m":
 		return "dir"
-	case len(parts) == 1 && parts[0] == "pl":
-		return "dir"
 	case len(parts) == 1 && parts[0] == "sk":
 		return "dir"
 	case len(parts) == 1 && parts[0] == "t":
@@ -381,10 +369,6 @@ func (s *Server) pathType(path string) string {
 		}
 	case len(parts) == 2 && parts[0] == "m":
 		if _, err := s.memStore.Stat(parts[1]); err == nil {
-			return "file"
-		}
-	case len(parts) == 2 && parts[0] == "pl":
-		if _, err := s.planStore.Stat(parts[1]); err == nil {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "sk":
@@ -532,10 +516,6 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		if err := s.memStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
 		}
-	case "/pl":
-		if err := s.planStore.Create(fc.Name); err != nil {
-			return errFcall(fc, err.Error())
-		}
 	case "/t":
 		if err := s.toolStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
@@ -667,15 +647,6 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return s.readSlice(fc, content)
 	}
 
-	// Plan files are served from the plan store.
-	if strings.HasPrefix(path, "/pl/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.planStore.Get(pathBase(path))
-		if err != nil {
-			return errFcall(fc, err.Error())
-		}
-		return s.readSlice(fc, content)
-	}
 
 	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
@@ -858,15 +829,6 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		f.qid.Path = qidPath(f.path)
 		cs.mu.Unlock()
 
-	case strings.HasPrefix(f.path, "/pl/"):
-		if err := s.planStore.Rename(oldName, newDir.Name); err != nil {
-			return errFcall(fc, err.Error())
-		}
-		cs.mu.Lock()
-		f.path = "/pl/" + newDir.Name
-		f.qid.Path = qidPath(f.path)
-		cs.mu.Unlock()
-
 	case strings.HasPrefix(f.path, "/sk/"):
 		if err := s.skillStore.Rename(oldName, newDir.Name); err != nil {
 			return errFcall(fc, err.Error())
@@ -1008,8 +970,6 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		err = s.agentStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/m/"):
 		err = s.memStore.Delete(pathBase(path))
-	case strings.HasPrefix(path, "/pl/"):
-		err = s.planStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/sk/"):
 		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
@@ -1071,11 +1031,6 @@ func (s *Server) handleWrite(path, input string) error {
 	// Memory file writes go to the memory store.
 	if strings.HasPrefix(path, "/m/") {
 		return s.memStore.Put(pathBase(path), []byte(input))
-	}
-
-	// Plan file writes go to the plan store.
-	if strings.HasPrefix(path, "/pl/") {
-		return s.planStore.Put(pathBase(path), []byte(input))
 	}
 
 	// Skill file writes go to the skill store.
@@ -1307,7 +1262,6 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		dirs = append(dirs, makeDir("help", "/help", false, 0444))
 		dirs = append(dirs, makeDir("m", "/m", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("p", "/p", true, plan9.DMDIR|0555))
-		dirs = append(dirs, makeDir("pl", "/pl", true, plan9.DMDIR|0755))
 		dirs = append(dirs, makeDir("s", "/s", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("sk", "/sk", true, plan9.DMDIR|0555))
 		dirs = append(dirs, makeDir("t", "/t", true, plan9.DMDIR|0777))
@@ -1334,18 +1288,6 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		for _, e := range entries {
 			if !e.IsDir() {
 				d := makeDir(e.Name(), "/m/"+e.Name(), false, 0666)
-				if info, err := e.Info(); err == nil {
-					d.Atime = uint32(info.ModTime().Unix())
-					d.Mtime = uint32(info.ModTime().Unix())
-				}
-				dirs = append(dirs, d)
-			}
-		}
-	} else if path == "/pl" {
-		entries, _ := s.planStore.List()
-		for _, e := range entries {
-			if !e.IsDir() {
-				d := makeDir(e.Name(), "/pl/"+e.Name(), false, 0666)
 				if info, err := e.Info(); err == nil {
 					d.Atime = uint32(info.ModTime().Unix())
 					d.Mtime = uint32(info.ModTime().Unix())
@@ -1500,7 +1442,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		qid.Type = QTDir
 		if path == "/t" {
 			mode = plan9.DMDIR | 0777
-		} else if path == "/a" || path == "/m" || path == "/pl" || path == "/tmp" || path == "/u" {
+		} else if path == "/a" || path == "/m" || path == "/tmp" || path == "/u" {
 			mode = plan9.DMDIR | 0755
 		} else {
 			mode = plan9.DMDIR | 0555
@@ -1523,8 +1465,6 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			} else if strings.HasPrefix(path, "/p/") {
 				mode = 0444
 			} else if strings.HasPrefix(path, "/m/") {
-				mode = 0666
-			} else if strings.HasPrefix(path, "/pl/") {
 				mode = 0666
 			} else if path == "/sk/idx" {
 				mode = 0444
@@ -1578,13 +1518,6 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	// For memory and plan files, report real size and timestamps from the store.
 	if strings.HasPrefix(path, "/m/") {
 		if info, err := s.memStore.Stat(base); err == nil {
-			dir.Length = uint64(info.Size())
-			dir.Atime = uint32(info.ModTime().Unix())
-			dir.Mtime = uint32(info.ModTime().Unix())
-		}
-	}
-	if strings.HasPrefix(path, "/pl/") {
-		if info, err := s.planStore.Stat(base); err == nil {
 			dir.Length = uint64(info.Size())
 			dir.Atime = uint32(info.ModTime().Unix())
 			dir.Mtime = uint32(info.ModTime().Unix())
