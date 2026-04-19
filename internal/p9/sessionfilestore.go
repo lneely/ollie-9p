@@ -325,7 +325,7 @@ func (s *SessionFileStore) makePublish() func(agent.Event) {
 	assistantStarted := false
 	return func(ev agent.Event) {
 		switch ev.Role {
-		case "call", "tool", "newline":
+		case "user", "call", "tool":
 			assistantStarted = false
 		case "assistant":
 			if !assistantStarted {

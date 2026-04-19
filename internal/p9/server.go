@@ -1354,8 +1354,6 @@ func formatEvent(ev agent.Event) []byte {
 		return []byte("agent stalled\n")
 	case "info":
 		return []byte(ev.Content)
-	case "newline":
-		return []byte("\n")
 	default:
 		return nil
 	}
