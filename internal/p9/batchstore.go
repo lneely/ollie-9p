@@ -28,11 +28,12 @@ type batchJob struct {
 	backend   string
 	model     string
 	output    string
-	status    string // "running" | "done" | "failed: ..."
+	state     string // "running" | "done" | "failed: ..."
 	result    string
 	usage     string
 	ctxsz     string
 	cancel    context.CancelFunc
+	done      chan struct{} // closed when state reaches a terminal value
 }
 
 // batchSpec is the parsed result of a b/new write.
@@ -154,14 +155,14 @@ func (s *BatchStore) job(id string) *batchJob {
 	return s.jobs[id]
 }
 
-// index returns the live b/idx content: id\tstatus\tcwd\tagent per line.
+// index returns the live b/idx content: id\tstate\tcwd\tagent per line.
 func (s *BatchStore) index() []byte {
 	var sb strings.Builder
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for id, job := range s.jobs {
 		job.mu.RLock()
-		fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\n", id, job.status, job.cwd, job.agentName)
+		fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\n", id, job.state, job.cwd, job.agentName)
 		job.mu.RUnlock()
 	}
 	return []byte(sb.String())
@@ -196,7 +197,8 @@ func (s *BatchStore) handleNewBatch(input string) error {
 			backend:   spec.backend,
 			model:     spec.model,
 			output:    spec.output,
-			status:    "running",
+			state:     "running",
+			done:      make(chan struct{}),
 		}
 		s.jobs[id] = job
 		s.mu.Unlock()
@@ -213,24 +215,26 @@ func (s *BatchStore) handleNewBatch(input string) error {
 	return nil
 }
 
-// runJob executes one batch job and updates its status and result.
+// runJob executes one batch job and updates its state and result.
 func (s *BatchStore) runJob(ctx context.Context, job *batchJob) {
 	result, err := s.executeJob(ctx, job)
 	job.mu.Lock()
 	defer job.mu.Unlock()
 	if err != nil {
 		if ctx.Err() != nil {
-			job.status = "failed: cancelled"
+			job.state = "failed: cancelled"
 		} else {
-			job.status = "failed: " + err.Error()
+			job.state = "failed: " + err.Error()
 		}
-		job.result = job.status
+		job.result = job.state
 		plog.Info("batch job %s failed: %v", job.id, err)
+		close(job.done)
 		return
 	}
 	job.result = result
-	job.status = "done"
+	job.state = "done"
 	plog.Info("batch job %s done", job.id)
+	close(job.done)
 }
 
 // executeJob creates an ephemeral agentCore, submits the prompt, and returns
@@ -383,11 +387,12 @@ var batchJobFiles = []struct {
 	name string
 	mode os.FileMode
 }{
-	{"spec",   0444},
-	{"status", 0444},
-	{"result", 0444},
-	{"usage",  0444},
-	{"ctxsz",  0444},
+	{"spec",      0444},
+	{"state",     0444},
+	{"statewait", 0444},
+	{"result",    0444},
+	{"usage",     0444},
+	{"ctxsz",     0444},
 }
 
 // BatchJobStore provides Stat/List/Get for the files within a single batch job
@@ -436,8 +441,8 @@ func (js *BatchJobStore) content(name string) string {
 	switch name {
 	case "spec":
 		return js.job.spec
-	case "status":
-		return js.job.status + "\n"
+	case "state":
+		return js.job.state + "\n"
 	case "result":
 		return js.job.result
 	case "usage":
@@ -446,4 +451,37 @@ func (js *BatchJobStore) content(name string) string {
 		return js.job.ctxsz + "\n"
 	}
 	return ""
+}
+
+// CurrentWaitValue returns the current value for the named *wait file.
+func (js *BatchJobStore) CurrentWaitValue(name string) string {
+	if name == "statewait" {
+		js.job.mu.RLock()
+		defer js.job.mu.RUnlock()
+		return js.job.state
+	}
+	return ""
+}
+
+// Wait blocks until the job leaves "running" state, then returns the new state.
+// Returns nil content (empty read) on context cancellation.
+func (js *BatchJobStore) Wait(ctx context.Context, name, base string) ([]byte, error) {
+	if name != "statewait" {
+		return nil, fmt.Errorf("%s: not a wait file", name)
+	}
+	js.job.mu.RLock()
+	current := js.job.state
+	js.job.mu.RUnlock()
+	if current != base {
+		return []byte(current + "\n"), nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, nil
+	case <-js.job.done:
+	}
+	js.job.mu.RLock()
+	current = js.job.state
+	js.job.mu.RUnlock()
+	return []byte(current + "\n"), nil
 }

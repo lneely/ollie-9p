@@ -30,14 +30,15 @@ ollie/
 
   b/                    dir:   batch jobs and job scripts
     new                 r/w:   read: KV template; write: submit a job spec
-    idx                 read:  job index (id, status, cwd, agent — one per line)
+    idx                 read:  job index (id, state, cwd, agent — one per line)
     job                 exec:  core batch job runner (submit, wait, print result)
     q                   exec:  foreground one-shot query; thin wrapper around job
     sched               exec:  submit background job; prints b/ path; wrapper around job
-    cleanup             exec:  remove all jobs with status "done"
+    cleanup             exec:  remove all jobs with state "done"
     <job-id>/                  rm -r to cancel and remove
       spec              read:  original job spec as submitted
-      status            read:  running | done | failed: <reason>
+      state             read:  running | done | failed: <reason>
+      statewait         read:  blocks until state changes; returns new state
       result            read:  assistant reply (populated when done)
       usage             read:  token counts
       ctxsz             read:  context size

@@ -539,8 +539,15 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	if strings.HasSuffix(pathBase(f.path), "wait") {
 		parts := strings.SplitN(strings.TrimPrefix(f.path, "/"), "/", 3)
 		if len(parts) == 3 {
-			if store, ok := s.sessionFileStore(parts[1]); ok {
-				f.waitBase = store.CurrentWaitValue(parts[2])
+			switch parts[0] {
+			case "s":
+				if store, ok := s.sessionFileStore(parts[1]); ok {
+					f.waitBase = store.CurrentWaitValue(parts[2])
+				}
+			case "b":
+				if js, ok := s.batchStore.JobStore(parts[1]); ok {
+					f.waitBase = js.CurrentWaitValue(parts[2])
+				}
 			}
 		}
 	}
@@ -635,6 +642,32 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 			js, ok := s.batchStore.JobStore(parts[1])
 			if !ok {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+			}
+			if parts[2] == "statewait" {
+				if fc.Offset > 0 {
+					return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+				}
+				cs.mu.RLock()
+				f, fidOK := cs.fids[fc.Fid]
+				var base string
+				if fidOK {
+					base = f.waitBase
+				}
+				cs.mu.RUnlock()
+				waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+				defer waitCancel()
+				content, err := js.Wait(waitCtx, parts[2], base)
+				if err != nil {
+					return errFcall(fc, err.Error())
+				}
+				if content != nil {
+					cs.mu.Lock()
+					if f, ok := cs.fids[fc.Fid]; ok {
+						f.waitBase = strings.TrimSuffix(string(content), "\n")
+					}
+					cs.mu.Unlock()
+				}
+				return s.readSlice(fc, content)
 			}
 			content, err := js.Get(parts[2])
 			if err != nil {
