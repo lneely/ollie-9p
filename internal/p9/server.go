@@ -792,7 +792,12 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 					base = f.waitBase
 				}
 				cs.mu.RUnlock()
-				content, err := store.Wait(ctx, parts[2], base)
+				// Wrap with a short timeout so the FUSE read returns
+				// periodically, allowing pending signals (e.g. SIGINT) to
+				// be delivered to the blocked client process.
+				waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+				defer waitCancel()
+				content, err := store.Wait(waitCtx, parts[2], base)
 				if err != nil {
 					return errFcall(fc, err.Error())
 				}
