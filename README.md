@@ -21,13 +21,12 @@ ollie/
     03_tool-files.md         read:  text editing instructions
     04_tool-reasoning.md     read:  reasoning instructions
     05_tool-memory.md        read:  memory instructions
-    06_tool-plan.md          read:  task planning instructions
     07_tool-subagents.md     read:  subagent usage
     08_tool-elevate.md       read:  controlled escape from execute_code sandbox
 
-  Prompt files are assembled in lexical order and rendered as Go templates at session
-  start. Changes take effect the next time the system prompt is rebuilt: on new session
-  creation, `/cwd` change, or `/agent` switch.
+  Prompt files have no automatic effect. They are injected into the system prompt
+  by the `prime` script (x/prime), typically via agentSpawn hooks in agent configs.
+  The assembled system prompt is visible at s/<id>/systemprompt.
 
   b/                    dir:   batch jobs and job scripts
     new                 r/w:   read: KV template; write: submit a job spec
@@ -42,7 +41,6 @@ ollie/
       result            read:  assistant reply (populated when done)
       usage             read:  token counts
       ctxsz             read:  context size
-  pl/                   dir:   plans
   s/                    dir:   sessions and session management scripts
     new                 r/w:   read: KV template; write: create session
     idx                 read:  session index (id, state, cwd, backend, model — one per line)
@@ -87,7 +85,6 @@ Each 9P directory endpoint is backed by a named store implementing one of the st
 | `/b`  | `BatchStore`           | `Store`         |
 | `/m`  | `FlatDirStore`         | `Store`         |
 | `/p`  | `FlatDirStore`         | `ReadableStore` |
-| `/pl` | `FlatDirStore`         | `Store`         |
 | `/sk` | `SkillStore`           | `Store`         |
 | `/t`  | `ToolStore`            | `Store`         |
 | `/u`  | `UtilStore`            | `Store`         |
