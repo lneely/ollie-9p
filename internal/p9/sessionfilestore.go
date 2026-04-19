@@ -1,6 +1,7 @@
 package p9
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -97,34 +98,6 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 			return nil, nil
 		}
 		return []byte(item), nil
-	case "statewait":
-		current := s.sess.core.State()
-		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchState, current)
-		if !ok {
-			return nil, nil
-		}
-		return []byte(v + "\n"), nil
-	case "usagewait":
-		current := s.sess.core.Usage()
-		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchUsage, current)
-		if !ok {
-			return nil, nil
-		}
-		return []byte(v + "\n"), nil
-	case "ctxszwait":
-		current := s.sess.core.CtxSz()
-		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchCtxSz, current)
-		if !ok {
-			return nil, nil
-		}
-		return []byte(v + "\n"), nil
-	case "cwdwait":
-		current := s.sess.core.CWD()
-		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchCWD, current)
-		if !ok {
-			return nil, nil
-		}
-		return []byte(v + "\n"), nil
 	default:
 		for _, f := range sessionFileList {
 			if f.name == name {
@@ -297,6 +270,36 @@ func (s *SessionFileStore) content(name string) string {
 		return formatParams(s.sess.core.GenerationParams())
 	}
 	return ""
+}
+
+// Wait blocks until the named *wait file's underlying value changes, then
+// returns the new value. Unblocks when connCtx or the session context is
+// cancelled, returning nil with no error (caller returns EOF to client).
+func (s *SessionFileStore) Wait(connCtx context.Context, name string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(connCtx)
+	defer cancel()
+	// also unblock when the session itself is killed.
+	context.AfterFunc(s.sess.ctx, cancel)
+
+	var field, current string
+	switch name {
+	case "statewait":
+		field, current = agent.WatchState, s.sess.core.State()
+	case "usagewait":
+		field, current = agent.WatchUsage, s.sess.core.Usage()
+	case "ctxszwait":
+		field, current = agent.WatchCtxSz, s.sess.core.CtxSz()
+	case "cwdwait":
+		field, current = agent.WatchCWD, s.sess.core.CWD()
+	default:
+		return nil, fmt.Errorf("%s: not a wait file", name)
+	}
+
+	v, ok := s.sess.core.WaitChange(ctx, field, current)
+	if !ok {
+		return nil, nil
+	}
+	return []byte(v + "\n"), nil
 }
 
 func (s *SessionFileStore) makePublish() func(agent.Event) {

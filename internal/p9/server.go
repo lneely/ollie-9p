@@ -95,8 +95,10 @@ type fid struct {
 
 // connState tracks all open fids for a single 9P connection.
 type connState struct {
-	mu   sync.RWMutex
-	fids map[uint32]*fid
+	mu     sync.RWMutex
+	fids   map[uint32]*fid
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Server is the 9P server for ollie sessions.
@@ -191,14 +193,21 @@ func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
 	), true
 }
 
-// Serve handles a single 9P connection.
+// Serve handles a single 9P connection. Each request is dispatched to its own
+// goroutine so blocking reads (e.g. *wait files) do not stall the serve loop.
 func (s *Server) Serve(conn net.Conn) {
 	defer conn.Close()
-	cs := &connState{fids: make(map[uint32]*fid)}
+	connCtx, connCancel := context.WithCancel(context.Background())
+	cs := &connState{
+		fids:   make(map[uint32]*fid),
+		ctx:    connCtx,
+		cancel: connCancel,
+	}
 	s.mu.Lock()
 	s.conns = append(s.conns, cs)
 	s.mu.Unlock()
 	defer func() {
+		connCancel()
 		s.mu.Lock()
 		for i, c := range s.conns {
 			if c == cs {
@@ -208,16 +217,34 @@ func (s *Server) Serve(conn net.Conn) {
 		}
 		s.mu.Unlock()
 	}()
+
+	responses := make(chan *plan9.Fcall, 16)
+	var wg sync.WaitGroup
+
+	// writer: serialises responses back onto the connection.
+	go func() {
+		for resp := range responses {
+			plan9.WriteFcall(conn, resp) //nolint:errcheck
+		}
+	}()
+
 	for {
 		fc, err := plan9.ReadFcall(conn)
 		if err != nil {
 			if err != io.EOF {
 				plog.Error("read: %v", err)
 			}
-			return
+			break
 		}
-		plan9.WriteFcall(conn, s.handle(cs, fc)) //nolint:errcheck
+		wg.Add(1)
+		go func(fc *plan9.Fcall) {
+			defer wg.Done()
+			responses <- s.handle(cs, fc)
+		}(fc)
 	}
+
+	wg.Wait()
+	close(responses)
 }
 
 var plog = olog.New("9p")
@@ -721,6 +748,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 			// fifo.out: non-zero offset is the trailing EOF read after a successful pop.
 			if parts[2] == "fifo.out" && fc.Offset > 0 {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+			}
+			// *wait files block until a value changes; use connection context.
+			if strings.HasSuffix(parts[2], "wait") {
+				content, err := store.Wait(cs.ctx, parts[2])
+				if err != nil {
+					return errFcall(fc, err.Error())
+				}
+				return s.readSlice(fc, content)
 			}
 			content, err := store.Get(parts[2])
 			if err != nil {
