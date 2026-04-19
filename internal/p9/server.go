@@ -96,10 +96,11 @@ type fid struct {
 
 // connState tracks all open fids for a single 9P connection.
 type connState struct {
-	mu     sync.RWMutex
-	fids   map[uint32]*fid
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu      sync.RWMutex
+	fids    map[uint32]*fid
+	ctx     context.Context
+	cancel  context.CancelFunc
+	pending map[uint16]context.CancelFunc // in-flight request cancels, keyed by tag
 }
 
 // Server is the 9P server for ollie sessions.
@@ -200,9 +201,10 @@ func (s *Server) Serve(conn net.Conn) {
 	defer conn.Close()
 	connCtx, connCancel := context.WithCancel(context.Background())
 	cs := &connState{
-		fids:   make(map[uint32]*fid),
-		ctx:    connCtx,
-		cancel: connCancel,
+		fids:    make(map[uint32]*fid),
+		ctx:     connCtx,
+		cancel:  connCancel,
+		pending: make(map[uint16]context.CancelFunc),
 	}
 	s.mu.Lock()
 	s.conns = append(s.conns, cs)
@@ -237,11 +239,22 @@ func (s *Server) Serve(conn net.Conn) {
 			}
 			break
 		}
+		reqCtx, reqCancel := context.WithCancel(connCtx)
+		cs.mu.Lock()
+		cs.pending[fc.Tag] = reqCancel
+		cs.mu.Unlock()
+
 		wg.Add(1)
-		go func(fc *plan9.Fcall) {
-			defer wg.Done()
-			responses <- s.handle(cs, fc)
-		}(fc)
+		go func(fc *plan9.Fcall, ctx context.Context) {
+			defer func() {
+				reqCancel()
+				cs.mu.Lock()
+				delete(cs.pending, fc.Tag)
+				cs.mu.Unlock()
+				wg.Done()
+			}()
+			responses <- s.handle(cs, fc, ctx)
+		}(fc, reqCtx)
 	}
 
 	wg.Wait()
@@ -250,7 +263,7 @@ func (s *Server) Serve(conn net.Conn) {
 
 var plog = olog.New("9p")
 
-func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
+func (s *Server) handle(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan9.Fcall {
 	switch fc.Type {
 	case plan9.Tversion:
 		msize := fc.Msize
@@ -271,7 +284,7 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case plan9.Tcreate:
 		return s.create(cs, fc)
 	case plan9.Tread:
-		return s.read(cs, fc)
+		return s.read(cs, fc, ctx)
 	case plan9.Twrite:
 		return s.write(cs, fc)
 	case plan9.Tstat:
@@ -279,7 +292,11 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case plan9.Twstat:
 		return s.wstat(cs, fc)
 	case plan9.Tflush:
-		// No blocking reads to cancel; always succeed.
+		cs.mu.Lock()
+		if cancel, ok := cs.pending[fc.Oldtag]; ok {
+			cancel()
+		}
+		cs.mu.Unlock()
 		return &plan9.Fcall{Type: plan9.Rflush, Tag: fc.Tag}
 	case plan9.Tclunk:
 		return s.clunk(cs, fc)
@@ -576,7 +593,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rcreate, Tag: fc.Tag, Qid: qid}
 }
 
-func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
+func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan9.Fcall {
 	cs.mu.RLock()
 	f, ok := cs.fids[fc.Fid]
 	if !ok {
@@ -762,7 +779,12 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
 			// *wait files block until a value changes; use connection context.
+			// One blocking read per open: a non-zero offset means the client
+			// already received data this open and is now polling for EOF.
 			if strings.HasSuffix(parts[2], "wait") {
+				if fc.Offset > 0 {
+					return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
+				}
 				cs.mu.RLock()
 				f, fidOK := cs.fids[fc.Fid]
 				var base string
@@ -770,7 +792,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 					base = f.waitBase
 				}
 				cs.mu.RUnlock()
-				content, err := store.Wait(cs.ctx, parts[2], base)
+				content, err := store.Wait(ctx, parts[2], base)
 				if err != nil {
 					return errFcall(fc, err.Error())
 				}
