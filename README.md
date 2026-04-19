@@ -15,14 +15,14 @@ ollie/
   backends                   read:  list of ollie-provided backends
   help                       read:  help file (backed by ~/.config/ollie/help.md)
   p/                         dir:   prompt templates (read, backed by ~/.config/ollie/prompts/)
-    00_base.md               read:  tone, accuracy, task execution, environment
-    01_ollie.md              read:  session identity, filesystem layout, session lifecycle
-    02_skills.md             read:  skill discovery and loading
-    03_tool-files.md         read:  text editing instructions
-    04_tool-reasoning.md     read:  reasoning instructions
-    05_tool-memory.md        read:  memory instructions
-    07_tool-subagents.md     read:  subagent usage
-    08_tool-elevate.md       read:  controlled escape from execute_code sandbox
+    sys-base.md              read:  tone, accuracy, task execution, environment
+    sys-ollie.md             read:  session identity, filesystem layout, session lifecycle
+    sys-skills.md            read:  skill discovery and loading
+    tools-file.md            read:  text editing instructions
+    tools-reasoning.md       read:  reasoning instructions
+    tools-memory.md          read:  memory instructions
+    tools-subagent.md        read:  subagent usage
+    tools-elevate.md         read:  controlled escape from execute_code sandbox
 
   Prompt files have no automatic effect. They are injected into the system prompt
   by the `prime` script (x/prime), typically via agentSpawn hooks in agent configs.
