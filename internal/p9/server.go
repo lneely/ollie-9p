@@ -533,24 +533,6 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	f.mode = fc.Mode
-	// Snapshot the current value for *wait files at open time so that the
-	// baseline is fixed before any read — eliminating the race between a
-	// prior read returning and the next read opening.
-	if strings.HasSuffix(pathBase(f.path), "wait") {
-		parts := strings.SplitN(strings.TrimPrefix(f.path, "/"), "/", 3)
-		if len(parts) == 3 {
-			switch parts[0] {
-			case "s":
-				if store, ok := s.sessionFileStore(parts[1]); ok {
-					f.waitBase = store.CurrentWaitValue(parts[2])
-				}
-			case "b":
-				if js, ok := s.batchStore.JobStore(parts[1]); ok {
-					f.waitBase = js.CurrentWaitValue(parts[2])
-				}
-			}
-		}
-	}
 	plog.Debug("Topen fid=%d path=%q mode=%d", fc.Fid, f.path, fc.Mode)
 	return &plan9.Fcall{Type: plan9.Ropen, Tag: fc.Tag, Qid: f.qid}
 }
