@@ -53,16 +53,20 @@ ollie/
       chat              read:  cumulative conversation history
       ctl               write: stop | <command>
       ctxsz             read:  estimated context size vs context window
-      dequeue           read:  pop the next queued prompt
-      enqueue           write: queue a prompt for later execution
+      ctxszwait         read:  blocks until ctxsz changes; returns new value
+      cwd               r/w:   working directory for tool execution
+      cwdwait           read:  blocks until cwd changes; returns new value
+      fifo.in           write: queue a prompt for later execution
+      fifo.out          read:  pop the next queued prompt
       mcp               read:  MCP server list
       model             r/w:   active model name
       models            read:  available models from the backend
       prompt            write: submit a prompt to the agent
       state             read:  current agent state (idle, thinking, calling: <tool>)
+      statewait         read:  blocks until state changes; returns new value
       systemprompt      read:  fully rendered system prompt for this session
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
-      cwd               r/w:   working directory for tool execution and system prompt
+      usagewait         read:  blocks until usage changes; returns new value
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)

@@ -14,8 +14,8 @@
 //	        {session-id}/           rm -r to kill session; mv to rename
 //	            ctl         (write) session control: stop, kill, rn, compact, clear
 //	            prompt      (write) submit a prompt to the agent
-//	            enqueue     (write) queue a prompt for later execution
-//	            dequeue     (read)  pop the next queued prompt
+//	            fifo.in     (write) queue a prompt for later execution
+//	            fifo.out    (read)  pop the next queued prompt
 //	            chat        (r/w)   cumulative chat history; write to save a transcript to tr/
 //	            state       (read)  current agent state
 //	            backend     (r/w)   active backend name
@@ -718,8 +718,8 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 				plog.Debug("Rread session not found: %s", parts[1])
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
-			// dequeue: non-zero offset is the trailing EOF read after a successful pop.
-			if parts[2] == "dequeue" && fc.Offset > 0 {
+			// fifo.out: non-zero offset is the trailing EOF read after a successful pop.
+			if parts[2] == "fifo.out" && fc.Offset > 0 {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
 			content, err := store.Get(parts[2])
@@ -945,7 +945,7 @@ func (s *Server) isAsyncWrite(path string) bool {
 		return false
 	}
 	switch pathBase(path) {
-	case "prompt", "enqueue", "ctl":
+	case "prompt", "fifo.in", "ctl":
 		return true
 	}
 	return false
@@ -1449,9 +1449,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		}
 	} else {
 		switch base {
-		case "ctl", "prompt", "enqueue":
+		case "ctl", "prompt", "fifo.in":
 			mode = 0200
-		case "chat", "state", "usage", "ctxsz", "models", "mcp", "dequeue":
+		case "chat", "state", "usage", "ctxsz", "models", "mcp", "fifo.out":
 			mode = 0444
 		case "backend", "agent", "model", "cwd":
 			mode = 0666

@@ -18,17 +18,21 @@ var sessionFileList = []struct {
 }{
 	{"ctl", 0200},
 	{"prompt", 0200},
-	{"enqueue", 0200},
-	{"dequeue", 0444},
+	{"fifo.in", 0200},
+	{"fifo.out", 0444},
 	{"chat", 0666},
 	{"offset", 0444},
 	{"state", 0444},
+	{"statewait", 0444},
 	{"backend", 0666},
 	{"agent", 0666},
 	{"model", 0666},
 	{"cwd", 0666},
+	{"cwdwait", 0444},
 	{"usage", 0444},
+	{"usagewait", 0444},
 	{"ctxsz", 0444},
+	{"ctxszwait", 0444},
 	{"models", 0444},
 	{"mcp", 0444},
 	{"systemprompt", 0444},
@@ -66,6 +70,8 @@ func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
 				s.sess.mu.RLock()
 				size = int64(len(s.sess.chatLog))
 				s.sess.mu.RUnlock()
+			case "statewait", "usagewait", "ctxszwait", "cwdwait":
+				// Blocking reads; size is unknown until resolved.
 			default:
 				size = int64(len(s.content(name)))
 			}
@@ -85,12 +91,40 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 		return data, nil
 	case "offset":
 		return []byte(s.content("offset")), nil
-	case "dequeue":
+	case "fifo.out":
 		item, ok := s.sess.core.PopQueue()
 		if !ok {
 			return nil, nil
 		}
 		return []byte(item), nil
+	case "statewait":
+		current := s.sess.core.State()
+		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchState, current)
+		if !ok {
+			return nil, nil
+		}
+		return []byte(v + "\n"), nil
+	case "usagewait":
+		current := s.sess.core.Usage()
+		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchUsage, current)
+		if !ok {
+			return nil, nil
+		}
+		return []byte(v + "\n"), nil
+	case "ctxszwait":
+		current := s.sess.core.CtxSz()
+		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchCtxSz, current)
+		if !ok {
+			return nil, nil
+		}
+		return []byte(v + "\n"), nil
+	case "cwdwait":
+		current := s.sess.core.CWD()
+		v, ok := s.sess.core.WaitChange(s.sess.ctx, agent.WatchCWD, current)
+		if !ok {
+			return nil, nil
+		}
+		return []byte(v + "\n"), nil
 	default:
 		for _, f := range sessionFileList {
 			if f.name == name {
@@ -113,7 +147,7 @@ func (s *SessionFileStore) Put(name string, data []byte) error {
 	case "prompt":
 		s.sess.core.Submit(s.sess.ctx, input, s.makePublish())
 
-	case "enqueue":
+	case "fifo.in":
 		s.sess.core.Queue(input)
 
 	case "ctl":
