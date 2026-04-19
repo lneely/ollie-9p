@@ -272,30 +272,49 @@ func (s *SessionFileStore) content(name string) string {
 	return ""
 }
 
-// Wait blocks until the named *wait file's underlying value changes, then
-// returns the new value. Unblocks when connCtx or the session context is
-// cancelled, returning nil with no error (caller returns EOF to client).
-func (s *SessionFileStore) Wait(connCtx context.Context, name string) ([]byte, error) {
+// CurrentWaitValue returns the current value for the named *wait file.
+func (s *SessionFileStore) CurrentWaitValue(name string) string {
+	switch name {
+	case "statewait":
+		return s.sess.core.State()
+	case "usagewait":
+		return s.sess.core.Usage()
+	case "ctxszwait":
+		return s.sess.core.CtxSz()
+	case "cwdwait":
+		return s.sess.core.CWD()
+	}
+	return ""
+}
+
+// Wait blocks until the named *wait file's underlying value changes from base,
+// then returns the new value. If base is empty, the current value is used.
+// Unblocks when connCtx or the session context is cancelled.
+func (s *SessionFileStore) Wait(connCtx context.Context, name, base string) ([]byte, error) {
 	ctx, cancel := context.WithCancel(connCtx)
 	defer cancel()
 	// also unblock when the session itself is killed.
 	context.AfterFunc(s.sess.ctx, cancel)
 
-	var field, current string
+	var field string
 	switch name {
 	case "statewait":
-		field, current = agent.WatchState, s.sess.core.State()
+		field = agent.WatchState
 	case "usagewait":
-		field, current = agent.WatchUsage, s.sess.core.Usage()
+		field = agent.WatchUsage
 	case "ctxszwait":
-		field, current = agent.WatchCtxSz, s.sess.core.CtxSz()
+		field = agent.WatchCtxSz
 	case "cwdwait":
-		field, current = agent.WatchCWD, s.sess.core.CWD()
+		field = agent.WatchCWD
 	default:
 		return nil, fmt.Errorf("%s: not a wait file", name)
 	}
 
-	v, ok := s.sess.core.WaitChange(ctx, field, current)
+	if base == "" {
+		base = s.CurrentWaitValue(name)
+	}
+
+	v, ok := s.sess.core.WaitChange(ctx, field, base)
 	if !ok {
 		return nil, nil
 	}

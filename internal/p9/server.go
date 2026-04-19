@@ -91,6 +91,7 @@ type fid struct {
 	qid      plan9.Qid
 	mode     uint8
 	writeBuf []byte
+	waitBase string // for *wait files: value snapshotted at open time
 }
 
 // connState tracks all open fids for a single 9P connection.
@@ -515,6 +516,17 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	f.mode = fc.Mode
+	// Snapshot the current value for *wait files at open time so that the
+	// baseline is fixed before any read — eliminating the race between a
+	// prior read returning and the next read opening.
+	if strings.HasSuffix(pathBase(f.path), "wait") {
+		parts := strings.SplitN(strings.TrimPrefix(f.path, "/"), "/", 3)
+		if len(parts) == 3 {
+			if store, ok := s.sessionFileStore(parts[1]); ok {
+				f.waitBase = store.CurrentWaitValue(parts[2])
+			}
+		}
+	}
 	plog.Debug("Topen fid=%d path=%q mode=%d", fc.Fid, f.path, fc.Mode)
 	return &plan9.Fcall{Type: plan9.Ropen, Tag: fc.Tag, Qid: f.qid}
 }
@@ -751,9 +763,24 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 			}
 			// *wait files block until a value changes; use connection context.
 			if strings.HasSuffix(parts[2], "wait") {
-				content, err := store.Wait(cs.ctx, parts[2])
+				cs.mu.RLock()
+				f, fidOK := cs.fids[fc.Fid]
+				var base string
+				if fidOK {
+					base = f.waitBase
+				}
+				cs.mu.RUnlock()
+				content, err := store.Wait(cs.ctx, parts[2], base)
 				if err != nil {
 					return errFcall(fc, err.Error())
+				}
+				// Update the fid's baseline to the returned value for subsequent reads.
+				if content != nil {
+					cs.mu.Lock()
+					if f, ok := cs.fids[fc.Fid]; ok {
+						f.waitBase = strings.TrimSuffix(string(content), "\n")
+					}
+					cs.mu.Unlock()
 				}
 				return s.readSlice(fc, content)
 			}
