@@ -6,25 +6,25 @@ import (
 	"ollie/pkg/tools/execute"
 )
 
-// PluginStore is a read-only FlatDirStore backed by the scripts/x/ directory.
+// ExecStore is a read-only FlatDirStore backed by the scripts/x/ directory.
 // Plugins are executables invoked by the server (e.g. elevation backends), not
 // by the agent or user directly.
-type PluginStore struct {
+type ExecStore struct {
 	*FlatDirStore
 }
 
-func NewPluginStore() *PluginStore {
-	return &PluginStore{FlatDirStore: NewFlatDirStore(execute.PluginsPath(), 0555)}
+func NewExecStore() *ExecStore {
+	return &ExecStore{FlatDirStore: NewFlatDirStore(execute.PluginsPath(), 0555)}
 }
 
-func (s *PluginStore) Stat(name string) (os.FileInfo, error) {
+func (s *ExecStore) Stat(name string) (os.FileInfo, error) {
 	return s.FlatDirStore.Stat(name)
 }
 
-func (s *PluginStore) List() ([]os.DirEntry, error) {
+func (s *ExecStore) List() ([]os.DirEntry, error) {
 	return s.FlatDirStore.List()
 }
 
-func (s *PluginStore) Get(name string) ([]byte, error) {
+func (s *ExecStore) Get(name string) ([]byte, error) {
 	return s.FlatDirStore.Get(name)
 }

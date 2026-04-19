@@ -140,7 +140,7 @@ func New() *Server {
 		memStore:        NewFlatDirStore(memDir, 0644),
 		toolStore:       NewToolStore(),
 		utilStore:       NewUtilStore(),
-		pluginStore:     NewPluginStore(),
+		pluginStore:     NewExecStore(),
 		skillStore:      NewSkillStore(),
 		transcriptStore: NewFlatDirStore(transcriptDir, 0444),
 		tmpStore:        NewFlatDirStore(tmpDir, 0600),

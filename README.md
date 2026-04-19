@@ -91,7 +91,7 @@ Each 9P directory endpoint is backed by a named store implementing one of the st
 | `/sk` | `SkillStore`           | `Store`         |
 | `/t`  | `ToolStore`            | `Store`         |
 | `/u`  | `UtilStore`            | `Store`         |
-| `/x`  | `PluginStore`          | `Store`         |
+| `/x`  | `ExecStore`            | `Store`         |
 | `/s`  | `SessionStore`         | `Store`         |
 
 To swap a backing store (e.g. replace `/pl` with a vector database or `/m` with an object store), implement the appropriate interface and wire it in `New()`. The store interface requires only `Stat`, `List`, `Get`, `Put`, `Delete`, `Create`, and `Rename` — authentication, connection management, and credential rotation are internal concerns of the implementation.
