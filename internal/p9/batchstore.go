@@ -490,30 +490,11 @@ func (js *BatchJobStore) content(name string) string {
 	return ""
 }
 
-// CurrentWaitValue returns the current value for the named *wait file.
-func (js *BatchJobStore) CurrentWaitValue(name string) string {
-	if name == "statewait" {
-		js.job.mu.RLock()
-		defer js.job.mu.RUnlock()
-		return js.job.state
-	}
-	return ""
-}
-
-// Wait blocks until the job leaves "running" state, then returns the new state.
+// Wait blocks until the job reaches a terminal state, then returns it.
 // Returns nil content (empty read) on context cancellation.
-func (js *BatchJobStore) Wait(ctx context.Context, name, base string) ([]byte, error) {
+func (js *BatchJobStore) Wait(ctx context.Context, name, _ string) ([]byte, error) {
 	if name != "statewait" {
 		return nil, fmt.Errorf("%s: not a wait file", name)
-	}
-	js.job.mu.RLock()
-	current := js.job.state
-	js.job.mu.RUnlock()
-	if base == "" {
-		base = current
-	}
-	if current != base {
-		return []byte(current + "\n"), nil
 	}
 	select {
 	case <-ctx.Done():
@@ -521,7 +502,7 @@ func (js *BatchJobStore) Wait(ctx context.Context, name, base string) ([]byte, e
 	case <-js.job.done:
 	}
 	js.job.mu.RLock()
-	current = js.job.state
+	state := js.job.state
 	js.job.mu.RUnlock()
-	return []byte(current + "\n"), nil
+	return []byte(state + "\n"), nil
 }
