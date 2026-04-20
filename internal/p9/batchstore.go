@@ -32,8 +32,21 @@ type batchJob struct {
 	result    string
 	usage     string
 	ctxsz     string
+	log       []byte
+	logVers   uint32
 	cancel    context.CancelFunc
 	done      chan struct{} // closed when state reaches a terminal value
+}
+
+// appendLog appends data to the job's log and bumps the Qid version.
+func (job *batchJob) appendLog(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	job.mu.Lock()
+	job.log = append(job.log, data...)
+	job.logVers++
+	job.mu.Unlock()
 }
 
 // batchSpec is the parsed result of a b/new write.
@@ -294,13 +307,21 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 	}
 
 	var replyBuf, errBuf strings.Builder
+	assistantStarted := false
 	core.Submit(ctx, prompt, func(ev agent.Event) {
 		switch ev.Role {
 		case "assistant":
 			replyBuf.WriteString(ev.Content)
+			if !assistantStarted {
+				job.appendLog([]byte("assistant: "))
+				assistantStarted = true
+			}
+		case "user", "call", "tool":
+			assistantStarted = false
 		case "error":
 			errBuf.WriteString(ev.Content)
 		}
+		job.appendLog(formatEvent(ev))
 	})
 
 	usage := core.Usage()
@@ -393,6 +414,7 @@ var batchJobFiles = []struct {
 	{"result",    0444},
 	{"usage",     0444},
 	{"ctxsz",     0444},
+	{"log",       0444},
 }
 
 // BatchJobStore provides Stat/List/Get for the files within a single batch job
@@ -420,13 +442,28 @@ func (js *BatchJobStore) List() ([]os.DirEntry, error) {
 func (js *BatchJobStore) Stat(name string) (os.FileInfo, error) {
 	for _, f := range batchJobFiles {
 		if f.name == name {
-			return &syntheticFileInfo{name: name, mode: f.mode, size: int64(len(js.content(name)))}, nil
+			var size int64
+			if name == "log" {
+				js.job.mu.RLock()
+				size = int64(len(js.job.log))
+				js.job.mu.RUnlock()
+			} else {
+				size = int64(len(js.content(name)))
+			}
+			return &syntheticFileInfo{name: name, mode: f.mode, size: size}, nil
 		}
 	}
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
 func (js *BatchJobStore) Get(name string) ([]byte, error) {
+	if name == "log" {
+		js.job.mu.RLock()
+		data := make([]byte, len(js.job.log))
+		copy(data, js.job.log)
+		js.job.mu.RUnlock()
+		return data, nil
+	}
 	for _, f := range batchJobFiles {
 		if f.name == name {
 			return []byte(js.content(name)), nil
@@ -472,6 +509,9 @@ func (js *BatchJobStore) Wait(ctx context.Context, name, base string) ([]byte, e
 	js.job.mu.RLock()
 	current := js.job.state
 	js.job.mu.RUnlock()
+	if base == "" {
+		base = current
+	}
 	if current != base {
 		return []byte(current + "\n"), nil
 	}

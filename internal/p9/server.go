@@ -1616,6 +1616,20 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			}
 		}
 	}
+	// Path format: /b/{jobid}/{file}
+	if strings.HasPrefix(path, "/b/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+		if len(parts) == 3 && parts[0] == "b" {
+			if js, ok := s.batchStore.JobStore(parts[1]); ok {
+				if base == "log" {
+					js.job.mu.RLock()
+					dir.Length = uint64(len(js.job.log))
+					dir.Qid.Vers = js.job.logVers
+					js.job.mu.RUnlock()
+				}
+			}
+		}
+	}
 
 	// For memory and plan files, report real size and timestamps from the store.
 	if strings.HasPrefix(path, "/m/") {
