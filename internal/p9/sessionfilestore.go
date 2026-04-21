@@ -77,7 +77,7 @@ func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
 			default:
 				size = int64(len(s.content(name)))
 			}
-			return &syntheticFileInfo{name: name, mode: f.mode, size: size}, nil
+			return &syntheticFileInfo{Name_: name, Mode_: f.mode, Size_: size}, nil
 		}
 	}
 	return nil, fmt.Errorf("%s: not found", name)

@@ -44,13 +44,13 @@ func (s *SessionStore) List() ([]os.DirEntry, error) {
 
 func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
 	if mode, ok := sessionStoreFiles[name]; ok {
-		return &syntheticFileInfo{name: name, mode: mode}, nil
+		return &syntheticFileInfo{Name_: name, Mode_: mode}, nil
 	}
 	s.srv.mu.RLock()
 	_, ok := s.srv.sessions[name]
 	s.srv.mu.RUnlock()
 	if ok {
-		return &syntheticFileInfo{name: name, mode: 0555, isDir: true}, nil
+		return &syntheticFileInfo{Name_: name, Mode_: 0555, IsDir_: true}, nil
 	}
 	return nil, fmt.Errorf("%s: not found", name)
 }

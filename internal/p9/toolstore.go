@@ -21,7 +21,7 @@ func NewToolStore() *ToolStore {
 
 func (s *ToolStore) Stat(name string) (os.FileInfo, error) {
 	if name == "idx" {
-		return &syntheticFileInfo{name: "idx", mode: 0444}, nil
+		return &syntheticFileInfo{Name_: "idx", Mode_: 0444}, nil
 	}
 	return s.FlatDirStore.Stat(name)
 }

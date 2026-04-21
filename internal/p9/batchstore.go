@@ -89,15 +89,15 @@ func (s *BatchStore) List() ([]os.DirEntry, error) {
 func (s *BatchStore) Stat(name string) (os.FileInfo, error) {
 	switch name {
 	case "new":
-		return &syntheticFileInfo{name: "new", mode: 0666, size: int64(len(batchNewTemplate))}, nil
+		return &syntheticFileInfo{Name_: "new", Mode_: 0666, Size_: int64(len(batchNewTemplate))}, nil
 	case "idx":
-		return &syntheticFileInfo{name: "idx", mode: 0444, size: int64(len(s.index()))}, nil
+		return &syntheticFileInfo{Name_: "idx", Mode_: 0444, Size_: int64(len(s.index()))}, nil
 	}
 	s.mu.RLock()
 	_, ok := s.jobs[name]
 	s.mu.RUnlock()
 	if ok {
-		return &syntheticFileInfo{name: name, mode: 0555, isDir: true}, nil
+		return &syntheticFileInfo{Name_: name, Mode_: 0555, IsDir_: true}, nil
 	}
 	return nil, fmt.Errorf("%s: not found", name)
 }
@@ -449,7 +449,7 @@ func (js *BatchJobStore) Stat(name string) (os.FileInfo, error) {
 			} else {
 				size = int64(len(js.content(name)))
 			}
-			return &syntheticFileInfo{name: name, mode: f.mode, size: size}, nil
+			return &syntheticFileInfo{Name_: name, Mode_: f.mode, Size_: size}, nil
 		}
 	}
 	return nil, fmt.Errorf("%s: not found", name)

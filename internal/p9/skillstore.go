@@ -74,13 +74,13 @@ func readSkill(name string) ([]byte, error) {
 
 func (s *SkillStore) Stat(name string) (os.FileInfo, error) {
 	if name == "idx" {
-		return &syntheticFileInfo{name: "idx", mode: 0444}, nil
+		return &syntheticFileInfo{Name_: "idx", Mode_: 0444}, nil
 	}
 	skillName := strings.TrimSuffix(name, ".md")
 	if _, err := readSkill(skillName); err != nil {
 		return nil, fmt.Errorf("%s: not found", name)
 	}
-	return &syntheticFileInfo{name: name, mode: 0666}, nil
+	return &syntheticFileInfo{Name_: name, Mode_: 0666}, nil
 }
 
 func (s *SkillStore) List() ([]os.DirEntry, error) {
