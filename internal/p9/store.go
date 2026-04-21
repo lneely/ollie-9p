@@ -19,12 +19,17 @@ type (
 	BlobStore      = store.BlobStore
 	Store          = store.Store
 	FlatDirStore   = store.FlatDir
+	SkillStore     = store.SkillStore
 
 	syntheticFileInfo = store.SyntheticFileInfo
 )
 
 func NewFlatDirStore(dir string, perm os.FileMode) *FlatDirStore {
 	return store.NewFlatDir(dir, perm)
+}
+
+func NewSkillStore() *SkillStore {
+	return store.NewSkillStore()
 }
 
 func syntheticEntry(name string, mode os.FileMode) os.DirEntry {
