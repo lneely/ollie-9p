@@ -217,6 +217,7 @@ func runServer(sockPath, pidPath string) {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
+	srv.InterruptAll()
 	fmt.Println("shutting down")
 	srv.Shutdown()
 	if fuseCmd != nil {

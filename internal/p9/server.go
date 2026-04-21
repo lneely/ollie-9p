@@ -131,11 +131,11 @@ func New() *Server {
 	os.MkdirAll(transcriptDir, 0755) //nolint:errcheck
 	tmpDir := defaultTmpDir()
 	os.MkdirAll(tmpDir, 0755) //nolint:errcheck
-	agentsDir := agent.DefaultAgentsDir()
+	agentsDir := paths.CfgDir() + "/agents"
 	s := &Server{
 		sessions:        make(map[string]*session),
 		agentsDir:       agentsDir,
-		sessionsDir:     agent.DefaultSessionsDir(),
+		sessionsDir:     paths.CfgDir() + "/sessions",
 		agentStore:      NewFlatDirStore(agentsDir, 0644),
 		promptStore:     NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
 		memStore:        NewFlatDirStore(memDir, 0644),
@@ -1285,6 +1285,17 @@ func (s *Server) createSession(args []string) error {
 }
 
 // Shutdown kills all active sessions and batch jobs, triggering Close() on each core.
+// InterruptAll cancels any in-progress agent turn on every active session.
+// Call this on SIGINT or SIGTERM before Shutdown to allow turns to unwind
+// cleanly rather than having their context cancelled mid-tool-call.
+func (s *Server) InterruptAll() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sess := range s.sessions {
+		sess.core.Interrupt(agent.ErrInterrupted)
+	}
+}
+
 func (s *Server) Shutdown() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.sessions))
