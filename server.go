@@ -30,8 +30,7 @@ type (
 	ReadWriteStore = store.ReadWriteStore
 	BlobStore      = store.BlobStore
 	Store          = store.Store
-	FlatDirStore   = store.FlatDir
-	SkillStore     = store.SkillStore
+	FlatDirStore   = store.Store
 	BatchStore     = store.BatchStore
 	BatchJobStore  = store.BatchJobStore
 	Session        = store.Session
@@ -41,11 +40,11 @@ type (
 	syntheticFileInfo = store.SyntheticFileInfo
 )
 
-func NewFlatDirStore(dir string, perm os.FileMode) *FlatDirStore {
+func NewFlatDirStore(dir string, perm os.FileMode) FlatDirStore {
 	return store.NewFlatDir(dir, perm)
 }
 
-func NewSkillStore() *SkillStore {
+func NewSkillStore() Store {
 	return store.NewSkillStore()
 }
 
@@ -61,7 +60,7 @@ func syntheticDirEntry(name string, mode os.FileMode) os.DirEntry {
 
 // UtilStore is a FlatDirStore backed by the scripts/u/ directory.
 type UtilStore struct {
-	*FlatDirStore
+	FlatDirStore
 }
 
 func NewUtilStore() *UtilStore {
@@ -84,7 +83,7 @@ func (s *UtilStore) Get(name string) ([]byte, error) {
 
 // ExecStore is a read-only FlatDirStore backed by the scripts/x/ directory.
 type ExecStore struct {
-	*FlatDirStore
+	FlatDirStore
 }
 
 func NewExecStore() *ExecStore {
@@ -109,7 +108,7 @@ func (s *ExecStore) Get(name string) ([]byte, error) {
 // It extends FlatDirStore with a synthetic "idx" entry that lists all tools
 // with their descriptions and argument signatures.
 type ToolStore struct {
-	*FlatDirStore
+	FlatDirStore
 }
 
 func NewToolStore() *ToolStore {
@@ -1514,7 +1513,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		if len(parts) == 3 && parts[0] == "s" {
 			if sess := s.sessionStore.Session(parts[1]); sess != nil {
 				if base == "chat" {
-					length, vers := sess.ChatInfo()
+					length, vers := sess.LogInfo()
 					dir.Length = uint64(length)
 					dir.Qid.Vers = vers
 				}
