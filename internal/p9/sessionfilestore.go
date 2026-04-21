@@ -9,6 +9,7 @@ import (
 
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
+	olog "ollie/pkg/log"
 )
 
 // sessionFileList defines the fixed set of files in a session directory,
@@ -44,13 +45,14 @@ var sessionFileList = []struct {
 // Rename are not meaningful and are not part of the interface.
 type SessionFileStore struct {
 	sess           *session
+	log            *olog.Logger
 	kill           func()
 	rename         func(newID string) error
 	saveTranscript func([]byte) error
 }
 
-func NewSessionFileStore(sess *session, kill func(), rename func(newID string) error, saveTranscript func([]byte) error) *SessionFileStore {
-	return &SessionFileStore{sess: sess, kill: kill, rename: rename, saveTranscript: saveTranscript}
+func NewSessionFileStore(sess *session, log *olog.Logger, kill func(), rename func(newID string) error, saveTranscript func([]byte) error) *SessionFileStore {
+	return &SessionFileStore{sess: sess, log: log, kill: kill, rename: rename, saveTranscript: saveTranscript}
 }
 
 func (s *SessionFileStore) List() ([]os.DirEntry, error) {
@@ -352,7 +354,7 @@ func (s *SessionFileStore) handleCtl(input string) error {
 	case "rn":
 		if name := strings.TrimSpace(input[3:]); name != "" {
 			if err := s.rename(name); err != nil {
-				plog.Error("rename: %v", err)
+				s.log.Error("rename: %v", err)
 			}
 		}
 	case "save":

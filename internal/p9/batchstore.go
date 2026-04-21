@@ -135,7 +135,7 @@ func (s *BatchStore) Delete(name string) error {
 	if cancel != nil {
 		cancel()
 	}
-	plog.Info("removed batch job %s", name)
+	s.srv.log.Info("removed batch job %s", name)
 	return nil
 }
 
@@ -223,7 +223,7 @@ func (s *BatchStore) handleNewBatch(input string) error {
 		go s.runJob(ctx, job)
 	}
 
-	plog.Info("new batch base=%s parallel=%d", baseID, spec.parallel)
+	s.srv.log.Info("new batch base=%s parallel=%d", baseID, spec.parallel)
 	return nil
 }
 
@@ -239,13 +239,13 @@ func (s *BatchStore) runJob(ctx context.Context, job *batchJob) {
 			job.state = "failed: " + err.Error()
 		}
 		job.result = job.state
-		plog.Info("batch job %s failed: %v", job.id, err)
+		s.srv.log.Info("batch job %s failed: %v", job.id, err)
 		close(job.done)
 		return
 	}
 	job.result = result
 	job.state = "done"
-	plog.Info("batch job %s done", job.id)
+	s.srv.log.Info("batch job %s done", job.id)
 	close(job.done)
 }
 
@@ -297,6 +297,7 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 		CWD:           cwd,
 		Env:           env,
 		NewDispatcher: newDisp,
+		Log:           s.srv.sink.NewLogger("core"),
 	})
 	defer core.Close()
 

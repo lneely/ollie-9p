@@ -107,6 +107,8 @@ type Server struct {
 	mu              sync.RWMutex
 	sessions        map[string]*session
 	conns           []*connState
+	log             *olog.Logger
+	sink            *olog.Sink
 	agentsDir       string // kept for session creation wiring
 	sessionsDir     string
 	agentStore      Store
@@ -123,7 +125,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New() *Server {
+func New(sink *olog.Sink) *Server {
 	memDir := defaultMemDir()
 	os.MkdirAll(memDir, 0755) //nolint:errcheck
 	transcriptDir := defaultTranscriptDir()
@@ -133,6 +135,8 @@ func New() *Server {
 	agentsDir := paths.CfgDir() + "/agents"
 	s := &Server{
 		sessions:        make(map[string]*session),
+		log:             sink.Logger("9p", olog.LevelDebug),
+		sink:            sink,
 		agentsDir:       agentsDir,
 		sessionsDir:     paths.CfgDir() + "/sessions",
 		agentStore:      NewFlatDirStore(agentsDir, 0644),
@@ -185,6 +189,7 @@ func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
 	}
 	return NewSessionFileStore(
 		sess,
+		s.log,
 		func() { s.killSession(sessID) },
 		func(newID string) error { return s.renameSession(sessID, newID) },
 		func(data []byte) error {
@@ -234,7 +239,7 @@ func (s *Server) Serve(conn net.Conn) {
 		fc, err := plan9.ReadFcall(conn)
 		if err != nil {
 			if err != io.EOF {
-				plog.Error("read: %v", err)
+				s.log.Error("read: %v", err)
 			}
 			break
 		}
@@ -260,8 +265,6 @@ func (s *Server) Serve(conn net.Conn) {
 	close(responses)
 }
 
-var plog = olog.New("9p")
-
 func (s *Server) handle(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan9.Fcall {
 	switch fc.Type {
 	case plan9.Tversion:
@@ -269,12 +272,12 @@ func (s *Server) handle(cs *connState, fc *plan9.Fcall, ctx context.Context) *pl
 		if msize > 65536 {
 			msize = 65536
 		}
-		plog.Debug("Tversion msize=%d", msize)
+		s.log.Debug("Tversion msize=%d", msize)
 		return &plan9.Fcall{Type: plan9.Rversion, Tag: fc.Tag, Msize: msize, Version: "9P2000"}
 	case plan9.Tauth:
 		return errFcall(fc, "no auth required")
 	case plan9.Tattach:
-		plog.Debug("Tattach fid=%d", fc.Fid)
+		s.log.Debug("Tattach fid=%d", fc.Fid)
 		return s.attach(cs, fc)
 	case plan9.Twalk:
 		return s.walk(cs, fc)
@@ -484,7 +487,7 @@ func (s *Server) walk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return &plan9.Fcall{Type: plan9.Rwalk, Tag: fc.Tag, Wqid: []plan9.Qid{}}
 	}
 
-	plog.Debug("Twalk fid=%d newfid=%d from=%q wnames=%v", fc.Fid, fc.Newfid, f.path, fc.Wname)
+	s.log.Debug("Twalk fid=%d newfid=%d from=%q wnames=%v", fc.Fid, fc.Newfid, f.path, fc.Wname)
 
 	wqids := make([]plan9.Qid, 0, len(fc.Wname))
 	cur := f.path
@@ -532,7 +535,7 @@ func (s *Server) open(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	f.mode = fc.Mode
-	plog.Debug("Topen fid=%d path=%q mode=%d", fc.Fid, f.path, fc.Mode)
+	s.log.Debug("Topen fid=%d path=%q mode=%d", fc.Fid, f.path, fc.Mode)
 	return &plan9.Fcall{Type: plan9.Ropen, Tag: fc.Tag, Qid: f.qid}
 }
 
@@ -549,7 +552,7 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	newPath := pathJoin(f.path, fc.Name)
-	plog.Debug("Tcreate parent=%q name=%q", f.path, fc.Name)
+	s.log.Debug("Tcreate parent=%q name=%q", f.path, fc.Name)
 	// (e.g. touch) produces a real file.
 	switch f.path {
 	case "/a":
@@ -593,15 +596,15 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	cs.mu.RUnlock()
 
 	if isDir {
-		plog.Debug("Tread dir path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread dir path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		data := s.readDir(path, fc.Offset, fc.Count)
-		plog.Debug("Rread dir path=%q len=%d", path, len(data))
+		s.log.Debug("Rread dir path=%q len=%d", path, len(data))
 		return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: uint32(len(data)), Data: data}
 	}
 
 	// Batch job files: /b/new, /b/idx, /b/{id}/{file}
 	if path == "/b/new" || path == "/b/idx" {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.batchStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -609,7 +612,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 		return s.readSlice(fc, content)
 	}
 	if path == "/b/job" || path == "/b/q" || path == "/b/sched" || path == "/b/cleanup" {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := os.ReadFile(paths.CfgDir() + "/scripts/b/" + pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -619,7 +622,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	if strings.HasPrefix(path, "/b/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 && parts[0] == "b" {
-			plog.Debug("Tread batch file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+			s.log.Debug("Tread batch file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 			js, ok := s.batchStore.JobStore(parts[1])
 			if !ok {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
@@ -660,26 +663,26 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Fixed files directly under /s/ are served from the session store.
 	if isSessionStoreFile(path) {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.sessionStore.Get(pathBase(path))
 		if err != nil {
-			plog.Debug("Rread path=%q err=%v", path, err)
+			s.log.Debug("Rread path=%q err=%v", path, err)
 			return errFcall(fc, err.Error())
 		}
-		plog.Debug("Rread path=%q content_len=%d", path, len(content))
+		s.log.Debug("Rread path=%q content_len=%d", path, len(content))
 		return s.readSlice(fc, content)
 	}
 
 	// backends is a static list of ollie-provided backends.
 	if path == "/backends" {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content := []byte(strings.Join(backend.Backends(), "\n") + "\n")
 		return s.readSlice(fc, content)
 	}
 
 	// help is served from ~/.config/ollie/help.md.
 	if path == "/help" {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := os.ReadFile(s.helpPath())
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -689,7 +692,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Agent config files are served from the agent store.
 	if strings.HasPrefix(path, "/a/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.agentStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -699,7 +702,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Prompt files are served from the prompt store.
 	if strings.HasPrefix(path, "/p/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.promptStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -709,7 +712,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Memory files are served from the memory store.
 	if strings.HasPrefix(path, "/m/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.memStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -720,7 +723,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.skillStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -730,7 +733,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.toolStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -740,7 +743,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Util files are served from the util store.
 	if strings.HasPrefix(path, "/u/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.utilStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -750,7 +753,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Plugin files are served from the plugin store.
 	if strings.HasPrefix(path, "/x/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.pluginStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -760,7 +763,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Tmp files are served from the tmp store.
 	if strings.HasPrefix(path, "/tmp/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.tmpStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -770,7 +773,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 
 	// Transcript files are served from the transcript store.
 	if strings.HasPrefix(path, "/tr/") {
-		plog.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 		content, err := s.transcriptStore.Get(pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
@@ -782,10 +785,10 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	if strings.HasPrefix(path, "/s/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 {
-			plog.Debug("Tread session file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
+			s.log.Debug("Tread session file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
 			store, ok := s.sessionFileStore(parts[1])
 			if !ok {
-				plog.Debug("Rread session not found: %s", parts[1])
+				s.log.Debug("Rread session not found: %s", parts[1])
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
 			// fifo.out: non-zero offset is the trailing EOF read after a successful pop.
@@ -827,14 +830,14 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 			}
 			content, err := store.Get(parts[2])
 			if err != nil {
-				plog.Debug("Rread session file err=%v", err)
+				s.log.Debug("Rread session file err=%v", err)
 				return errFcall(fc, err.Error())
 			}
-			plog.Debug("Rread session file path=%q content_len=%d", path, len(content))
+			s.log.Debug("Rread session file path=%q content_len=%d", path, len(content))
 			return s.readSlice(fc, content)
 		}
 	}
-	plog.Debug("Tread unhandled path=%q", path)
+	s.log.Debug("Tread unhandled path=%q", path)
 	return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 }
 
@@ -863,7 +866,7 @@ func (s *Server) write(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		cs.mu.Unlock()
 		return errFcall(fc, "bad fid")
 	}
-	plog.Debug("Twrite fid=%d path=%q offset=%d len=%d", fc.Fid, f.path, fc.Offset, len(fc.Data))
+	s.log.Debug("Twrite fid=%d path=%q offset=%d len=%d", fc.Fid, f.path, fc.Offset, len(fc.Data))
 	// Accumulate; the 9P client may split large writes across multiple Twrite messages.
 	end := int(fc.Offset) + len(fc.Data)
 	if end > len(f.writeBuf) {
@@ -884,7 +887,7 @@ func (s *Server) stat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return errFcall(fc, "bad fid")
 	}
 	dir := s.makeStat(f.path)
-	plog.Debug("Tstat path=%q mode=%o len=%d", f.path, dir.Mode, dir.Length)
+	s.log.Debug("Tstat path=%q mode=%o len=%d", f.path, dir.Mode, dir.Length)
 	stat, err := dir.Bytes()
 	if err != nil {
 		return errFcall(fc, err.Error())
@@ -908,7 +911,7 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	oldName := pathBase(f.path)
-	plog.Debug("Twstat path=%q oldName=%q newName=%q", f.path, oldName, newDir.Name)
+	s.log.Debug("Twstat path=%q oldName=%q newName=%q", f.path, oldName, newDir.Name)
 	if newDir.Name == "" || newDir.Name == oldName {
 		return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
 	}
@@ -1008,7 +1011,7 @@ func (s *Server) renameSession(oldID, newID string) error {
 	}
 
 	sess.appendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
-	plog.Info("renamed session %s -> %s", oldID, newID)
+	s.log.Info("renamed session %s -> %s", oldID, newID)
 	return nil
 }
 
@@ -1027,16 +1030,16 @@ func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 	cs.mu.Unlock()
 	if len(data) > 0 {
-		plog.Debug("Tclunk flush path=%q writeBuf=%d", path, len(data))
+		s.log.Debug("Tclunk flush path=%q writeBuf=%d", path, len(data))
 		input := strings.TrimSpace(string(data))
 		if s.isAsyncWrite(path) {
 			go s.handleWrite(path, input) //nolint:errcheck
 		} else if err := s.handleWrite(path, input); err != nil {
-			plog.Debug("Tclunk handleWrite err=%v", err)
+			s.log.Debug("Tclunk handleWrite err=%v", err)
 			return errFcall(fc, err.Error())
 		}
 	} else {
-		plog.Debug("Tclunk fid=%d path=%q (no write)", fc.Fid, path)
+		s.log.Debug("Tclunk fid=%d path=%q (no write)", fc.Fid, path)
 	}
 	return &plan9.Fcall{Type: plan9.Rclunk, Tag: fc.Tag}
 }
@@ -1066,7 +1069,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	}
 
 	path := f.path
-	plog.Debug("Tremove path=%q", path)
+	s.log.Debug("Tremove path=%q", path)
 	var err error
 	switch {
 	case strings.HasPrefix(path, "/a/"):
@@ -1113,7 +1116,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 // Called synchronously from clunk; prompt writes are the exception (spawned
 // as a goroutine because they block for the entire agent turn).
 func (s *Server) handleWrite(path, input string) error {
-	plog.Debug("handleWrite path=%q input_len=%d", path, len(input))
+	s.log.Debug("handleWrite path=%q input_len=%d", path, len(input))
 	if input == "" {
 		return nil
 	}
@@ -1168,7 +1171,7 @@ func (s *Server) handleWrite(path, input string) error {
 
 // handleNewSession parses KV pairs (one per line or space-separated) and creates a session.
 func (s *Server) handleNewSession(input string) error {
-	plog.Debug("handleNewSession input=%q", input)
+	s.log.Debug("handleNewSession input=%q", input)
 	// Accept both newline-separated and space-separated KV pairs.
 	args := strings.Fields(input)
 	return s.createSession(args)
@@ -1265,6 +1268,7 @@ func (s *Server) createSession(args []string) error {
 		CWD:           cwd,
 		Env:           env,
 		NewDispatcher: newDisp,
+		Log:           s.sink.NewLogger("core"),
 	})
 	sess := &session{
 		id:     sessID,
@@ -1277,7 +1281,7 @@ func (s *Server) createSession(args []string) error {
 	s.sessions[sessID] = sess
 	s.mu.Unlock()
 
-	plog.Info("new session %s (backend=%s model=%s agent=%s)",
+	s.log.Info("new session %s (backend=%s model=%s agent=%s)",
 		sessID, core.BackendName(), core.ModelName(), core.AgentName())
 	return nil
 }
@@ -1316,7 +1320,7 @@ func (s *Server) killSession(id string) {
 	if sess != nil {
 		sess.cancel()
 		sess.core.Close()
-		plog.Info("killed session %s", id)
+		s.log.Info("killed session %s", id)
 	}
 }
 

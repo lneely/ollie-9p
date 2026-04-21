@@ -152,7 +152,8 @@ func runServer(sockPath, pidPath string) {
 	// Write PID file
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644) //nolint:errcheck
 
-	srv := p9.New()
+	sink := olog.NewSink(os.Stdout, os.Stderr, olog.ParseLevel(os.Getenv("OLLIE_LOG"), olog.LevelWarn))
+	srv := p9.New(sink)
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -230,5 +231,5 @@ func runServer(sockPath, pidPath string) {
 	}
 	os.Remove(sockPath)
 	os.Remove(pidPath)
-	olog.Flush()
+	sink.Flush()
 }
