@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"9fans.net/go/plan9/client"
-	p9 "olliesrv/internal/p9"
 	"ollie/pkg/env"
 	olog "ollie/pkg/log"
 )
@@ -153,7 +152,7 @@ func runServer(sockPath, pidPath string) {
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644) //nolint:errcheck
 
 	sink := olog.NewSink(os.Stdout, os.Stderr, olog.ParseLevel(os.Getenv("OLLIE_LOG"), olog.LevelWarn))
-	srv := p9.New(sink)
+	srv := New(sink)
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
