@@ -25,15 +25,13 @@ import (
 
 // Re-export core store types so existing 9p code compiles unchanged.
 type (
-	ReadableStore  = store.ReadableStore
-	WritableStore  = store.WritableStore
-	ReadWriteStore = store.ReadWriteStore
-	BlobStore      = store.BlobStore
-	Store          = store.Store
-	FlatDirStore   = store.BlobStore
-	BatchStore     = store.BatchStore
-	Session        = store.Session
-	SessionStore   = store.SessionStore
+	StoreEntry    = store.StoreEntry
+	Store         = store.Store
+	RunnableStore = store.RunnableStore
+	FlatDirStore  = store.Store
+	BatchStore    = store.BatchStore
+	Session       = store.Session
+	SessionStore  = store.SessionStore
 
 	syntheticFileInfo = store.SyntheticFileInfo
 )
@@ -42,7 +40,7 @@ func NewFlatDirStore(dir string, perm os.FileMode) FlatDirStore {
 	return store.NewFlatDir(dir, perm)
 }
 
-func NewSkillStore() BlobStore {
+func NewSkillStore() Store {
 	return store.NewSkillStore()
 }
 
@@ -73,8 +71,8 @@ func (s *UtilStore) List() ([]os.DirEntry, error) {
 	return s.FlatDirStore.List()
 }
 
-func (s *UtilStore) Get(name string) ([]byte, error) {
-	return s.FlatDirStore.Get(name)
+func (s *UtilStore) Open(name string) (StoreEntry, error) {
+	return s.FlatDirStore.Open(name)
 }
 
 // --- exec ---
@@ -96,8 +94,8 @@ func (s *ExecStore) List() ([]os.DirEntry, error) {
 	return s.FlatDirStore.List()
 }
 
-func (s *ExecStore) Get(name string) ([]byte, error) {
-	return s.FlatDirStore.Get(name)
+func (s *ExecStore) Open(name string) (StoreEntry, error) {
+	return s.FlatDirStore.Open(name)
 }
 
 // --- tools ---
@@ -128,11 +126,16 @@ func (s *ToolStore) List() ([]os.DirEntry, error) {
 	return result, err
 }
 
-func (s *ToolStore) Get(name string) ([]byte, error) {
+func (s *ToolStore) Open(name string) (StoreEntry, error) {
 	if name == "idx" {
-		return s.index()
+		return &store.EntryConfig{
+			StatFn: func() (os.FileInfo, error) { return &syntheticFileInfo{Name_: "idx", Mode_: 0444}, nil },
+			ReadFn: func() ([]byte, error) { return s.index() },
+			WriteFn: func([]byte) error { return fmt.Errorf("idx: read-only") },
+			BlockingReadFn: func(context.Context, string) ([]byte, error) { return nil, fmt.Errorf("blocking read not supported") },
+		}, nil
 	}
-	return s.FlatDirStore.Get(name)
+	return s.FlatDirStore.Open(name)
 }
 
 func (s *ToolStore) index() ([]byte, error) {
@@ -145,7 +148,7 @@ func (s *ToolStore) index() ([]byte, error) {
 		if e.IsDir() {
 			continue
 		}
-		data, err := s.FlatDirStore.Get(e.Name())
+		data, err := storeRead(s.FlatDirStore, e.Name())
 		if err != nil {
 			continue
 		}
@@ -205,17 +208,17 @@ type Server struct {
 	log             *olog.Logger
 	sink            *olog.Sink
 	agentsDir       string // kept for session creation wiring
-	agentStore      BlobStore
-	promptStore     ReadableStore
-	memStore        BlobStore
-	toolStore       BlobStore
-	utilStore       BlobStore
-	pluginStore     BlobStore
-	skillStore      BlobStore
+	agentStore      Store
+	promptStore     Store
+	memStore        Store
+	toolStore       Store
+	utilStore       Store
+	pluginStore     Store
+	skillStore      Store
 	sessionStore    *SessionStore
 	batchStore      *BatchStore
-	transcriptStore BlobStore
-	tmpStore        BlobStore
+	transcriptStore Store
+	tmpStore        Store
 }
 
 // New creates a new Server.
@@ -249,7 +252,7 @@ func New(sink *olog.Sink) *Server {
 		Sink:        s.sink,
 		SaveTranscript: func(data []byte) error {
 			name := time.Now().Format("20060102T150405") + "-chat.md"
-			return s.transcriptStore.Put(name, data)
+			return storeWrite(s.transcriptStore, name, data)
 		},
 		OnRename: func(oldID, newID string) {
 			oldPrefix := "/s/" + oldID
@@ -300,12 +303,39 @@ func defaultTmpDir() string {
 }
 
 // sessionFileStore returns a Store for the given session ID.
-func (s *Server) sessionFileStore(sessID string) (Store, bool) {
-	st, err := s.sessionStore.Open(sessID)
+func (s *Server) sessionFileStore(sessID string) (store.RunnableStore, bool) {
+	st, err := s.sessionStore.OpenStore(sessID)
 	if err != nil {
 		return nil, false
 	}
 	return st, true
+}
+
+// storeRead opens an entry in a store and reads it.
+func storeRead(s store.Store, name string) ([]byte, error) {
+	e, err := s.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return e.Read()
+}
+
+// storeWrite opens an entry in a store and writes to it.
+func storeWrite(s store.Store, name string, data []byte) error {
+	e, err := s.Open(name)
+	if err != nil {
+		return err
+	}
+	return e.Write(data)
+}
+
+// storeBlockingRead opens an entry and performs a blocking read.
+func storeBlockingRead(s store.Store, name string, ctx context.Context, base string) ([]byte, error) {
+	e, err := s.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return e.BlockingRead(ctx, base)
 }
 
 // Serve handles a single 9P connection. Each request is dispatched to its own
@@ -500,7 +530,7 @@ func (s *Server) pathType(path string) string {
 			}
 		}
 	case len(parts) == 3 && parts[0] == "b":
-		if js, err := s.batchStore.Open(parts[1]); err == nil {
+		if js, err := s.batchStore.OpenStore(parts[1]); err == nil {
 			if _, err := js.Stat(parts[2]); err == nil {
 				return "file"
 			}
@@ -714,7 +744,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Batch job files: /b/new, /b/idx, /b/{id}/{file}
 	if path == "/b/new" || path == "/b/idx" {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.batchStore.Get(pathBase(path))
+		content, err := storeRead(s.batchStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -732,7 +762,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 && parts[0] == "b" {
 			s.log.Debug("Tread batch file path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-			js, err := s.batchStore.Open(parts[1])
+			js, err := s.batchStore.OpenStore(parts[1])
 			if err != nil {
 				return &plan9.Fcall{Type: plan9.Rread, Tag: fc.Tag, Count: 0}
 			}
@@ -749,7 +779,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 				cs.mu.RUnlock()
 				waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
 				defer waitCancel()
-				content, err := js.(*store.BatchJobStore).Wait(waitCtx, parts[2], base)
+				content, err := storeBlockingRead(js, parts[2], waitCtx, base)
 				if err != nil {
 					return errFcall(fc, err.Error())
 				}
@@ -762,7 +792,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 				}
 				return s.readSlice(fc, content)
 			}
-			content, err := js.Get(parts[2])
+			content, err := storeRead(js, parts[2])
 			if err != nil {
 				return errFcall(fc, err.Error())
 			}
@@ -773,7 +803,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Fixed files directly under /s/ are served from the session store.
 	if isSessionStoreFile(path) {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.sessionStore.Get(pathBase(path))
+		content, err := storeRead(s.sessionStore, pathBase(path))
 		if err != nil {
 			s.log.Debug("Rread path=%q err=%v", path, err)
 			return errFcall(fc, err.Error())
@@ -802,7 +832,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Agent config files are served from the agent store.
 	if strings.HasPrefix(path, "/a/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.agentStore.Get(pathBase(path))
+		content, err := storeRead(s.agentStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -812,7 +842,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Prompt files are served from the prompt store.
 	if strings.HasPrefix(path, "/p/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.promptStore.Get(pathBase(path))
+		content, err := storeRead(s.promptStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -822,7 +852,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Memory files are served from the memory store.
 	if strings.HasPrefix(path, "/m/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.memStore.Get(pathBase(path))
+		content, err := storeRead(s.memStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -833,7 +863,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.skillStore.Get(pathBase(path))
+		content, err := storeRead(s.skillStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -843,7 +873,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.toolStore.Get(pathBase(path))
+		content, err := storeRead(s.toolStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -853,7 +883,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Util files are served from the util store.
 	if strings.HasPrefix(path, "/u/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.utilStore.Get(pathBase(path))
+		content, err := storeRead(s.utilStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -863,7 +893,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Plugin files are served from the plugin store.
 	if strings.HasPrefix(path, "/x/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.pluginStore.Get(pathBase(path))
+		content, err := storeRead(s.pluginStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -873,7 +903,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Tmp files are served from the tmp store.
 	if strings.HasPrefix(path, "/tmp/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.tmpStore.Get(pathBase(path))
+		content, err := storeRead(s.tmpStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -883,7 +913,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Transcript files are served from the transcript store.
 	if strings.HasPrefix(path, "/tr/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := s.transcriptStore.Get(pathBase(path))
+		content, err := storeRead(s.transcriptStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -923,7 +953,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 				// be delivered to the blocked client process.
 				waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
 				defer waitCancel()
-				content, err := sfs.(*store.SessionFileStore).Wait(waitCtx, parts[2], base)
+				content, err := storeBlockingRead(sfs, parts[2], waitCtx, base)
 				if err != nil {
 					return errFcall(fc, err.Error())
 				}
@@ -937,7 +967,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 				}
 				return s.readSlice(fc, content)
 			}
-			content, err := sfs.Get(parts[2])
+			content, err := storeRead(sfs, parts[2])
 			if err != nil {
 				s.log.Debug("Rread session file err=%v", err)
 				return errFcall(fc, err.Error())
@@ -1186,36 +1216,36 @@ func (s *Server) handleWrite(path, input string) error {
 	}
 
 	if path == "/b/new" {
-		return s.batchStore.Put("new", []byte(input))
+		return storeWrite(s.batchStore, "new", []byte(input))
 	}
 
 	if path == "/s/new" {
-		return s.sessionStore.Put("new", []byte(input))
+		return storeWrite(s.sessionStore, "new", []byte(input))
 	}
 
 	// Agent config writes go to the agent store.
 	if strings.HasPrefix(path, "/a/") {
-		return s.agentStore.Put(pathBase(path), []byte(input))
+		return storeWrite(s.agentStore, pathBase(path), []byte(input))
 	}
 
 	// Memory file writes go to the memory store.
 	if strings.HasPrefix(path, "/m/") {
-		return s.memStore.Put(pathBase(path), []byte(input))
+		return storeWrite(s.memStore, pathBase(path), []byte(input))
 	}
 
 	// Skill file writes go to the skill store.
 	if strings.HasPrefix(path, "/sk/") {
-		return s.skillStore.Put(pathBase(path), []byte(input))
+		return storeWrite(s.skillStore, pathBase(path), []byte(input))
 	}
 
 	// Tool file writes go to the tool store.
 	if strings.HasPrefix(path, "/t/") {
-		return s.toolStore.Put(pathBase(path), []byte(input))
+		return storeWrite(s.toolStore, pathBase(path), []byte(input))
 	}
 
 	// Tmp file writes go to the tmp store.
 	if strings.HasPrefix(path, "/tmp/") {
-		return s.tmpStore.Put(pathBase(path), []byte(input))
+		return storeWrite(s.tmpStore, pathBase(path), []byte(input))
 	}
 
 	// Session file writes: /s/{sessid}/{file}
@@ -1226,7 +1256,7 @@ func (s *Server) handleWrite(path, input string) error {
 			if !ok {
 				return fmt.Errorf("session not found: %s", parts[1])
 			}
-			return sfs.Put(parts[2], []byte(input))
+			return storeWrite(sfs, parts[2], []byte(input))
 		}
 	}
 
@@ -1366,7 +1396,7 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 		}
 	} else if strings.HasPrefix(path, "/b/") {
 		// /b/{id} directory listing
-		if js, err := s.batchStore.Open(pathBase(path)); err == nil {
+		if js, err := s.batchStore.OpenStore(pathBase(path)); err == nil {
 			entries, _ := js.List()
 			for _, e := range entries {
 				info, _ := e.Info()
@@ -1517,9 +1547,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	if strings.HasPrefix(path, "/b/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 && parts[0] == "b" {
-			if js, err := s.batchStore.Open(parts[1]); err == nil {
+			if js, err := s.batchStore.OpenStore(parts[1]); err == nil {
 				if base == "log" {
-					length, vers := js.(*store.BatchJobStore).LogInfo()
+					length, vers := js.LogInfo()
 					dir.Length = uint64(length)
 					dir.Qid.Vers = vers
 				}
@@ -1541,7 +1571,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	if dir.Length == 0 && !isDir {
 		switch {
 		case isSessionStoreFile(path):
-			if content, err := s.sessionStore.Get(base); err == nil {
+			if content, err := storeRead(s.sessionStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case path == "/backends":
@@ -1559,19 +1589,19 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				dir.Length = uint64(info.Size())
 			}
 		case strings.HasPrefix(path, "/sk/"):
-			if content, err := s.skillStore.Get(base); err == nil {
+			if content, err := storeRead(s.skillStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/t/"):
-			if content, err := s.toolStore.Get(base); err == nil {
+			if content, err := storeRead(s.toolStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/u/"):
-			if content, err := s.utilStore.Get(base); err == nil {
+			if content, err := storeRead(s.utilStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/x/"):
-			if content, err := s.pluginStore.Get(base); err == nil {
+			if content, err := storeRead(s.pluginStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case path == "/b/job" || path == "/b/q" || path == "/b/sched" || path == "/b/cleanup":
@@ -1591,13 +1621,13 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				dir.Mtime = uint32(info.ModTime().Unix())
 			}
 		case path == "/b/new" || path == "/b/idx":
-			if content, err := s.batchStore.Get(base); err == nil {
+			if content, err := storeRead(s.batchStore, base); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/b/"):
 			parts := strings.SplitN(strings.TrimPrefix(path, "/b/"), "/", 2)
 			if len(parts) == 2 {
-				if js, err := s.batchStore.Open(parts[0]); err == nil {
+				if js, err := s.batchStore.OpenStore(parts[0]); err == nil {
 					if info, err := js.Stat(parts[1]); err == nil {
 						dir.Length = uint64(info.Size())
 					}
