@@ -35,7 +35,6 @@ var sessionFileList = []struct {
 	{"ctxsz", 0444},
 	{"ctxszwait", 0444},
 	{"models", 0444},
-	{"mcp", 0444},
 	{"systemprompt", 0444},
 	{"params", 0666},
 }
@@ -260,8 +259,6 @@ func (s *SessionFileStore) content(name string) string {
 		return s.sess.core.CtxSz() + "\n"
 	case "models":
 		return s.sess.core.ListModels() + "\n"
-	case "mcp":
-		return s.sess.core.ListServers() + "\n"
 	case "systemprompt":
 		return s.sess.core.SystemPrompt()
 	case "offset":
@@ -366,7 +363,7 @@ func (s *SessionFileStore) handleCtl(input string) error {
 		return s.saveTranscript(data)
 	case "compact", "clear", "backend", "model", "models",
 		"agents", "agent", "sessions", "cwd", "skills",
-		"tools", "mcp", "context", "usage", "history",
+		"tools", "context", "usage", "history",
 		"irw", "help":
 		s.sess.core.Submit(s.sess.ctx, "/"+input, s.makePublish())
 	default:

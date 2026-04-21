@@ -22,7 +22,7 @@
 //	            agent       (r/w)   active agent name
 //	            model       (r/w)   active model name
 //	            models      (read)  available models from the backend
-//	            mcp         (read)  MCP server list
+//	            models      (read)  available models
 //	            cwd         (r/w)   working directory
 //	            usage       (read)  token counts
 //	            ctxsz       (read)  context size vs window
@@ -1564,7 +1564,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt", "fifo.in":
 			mode = 0200
-		case "chat", "state", "usage", "ctxsz", "models", "mcp", "fifo.out":
+		case "chat", "state", "usage", "ctxsz", "models", "fifo.out":
 			mode = 0444
 		case "backend", "agent", "model", "cwd":
 			mode = 0666

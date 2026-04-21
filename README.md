@@ -59,7 +59,6 @@ ollie/
       cwdwait           read:  blocks until cwd changes; returns new value
       fifo.in           write: queue a prompt for later execution
       fifo.out          read:  pop the next queued prompt
-      mcp               read:  MCP server list
       model             r/w:   active model name
       models            read:  available models from the backend
       prompt            write: submit a prompt to the agent
@@ -164,7 +163,7 @@ echo "rn my-name" > $OLLIE/s/<session-id>/ctl
 echo "model qwen3:8b" > $OLLIE/s/<session-id>/ctl
 ```
 
-`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `mcp`, `context`, `usage`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
+`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `context`, `usage`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
 
 ### Switch backend, model, or agent
 
