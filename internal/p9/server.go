@@ -48,6 +48,7 @@ import (
 	"ollie/pkg/backend"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
+	"ollie/pkg/store"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 
@@ -150,7 +151,11 @@ func New(sink *olog.Sink) *Server {
 		tmpStore:        NewFlatDirStore(tmpDir, 0600),
 	}
 	s.sessionStore = &SessionStore{srv: s}
-	s.batchStore = NewBatchStore(s)
+	s.batchStore = store.NewBatchStore(store.BatchStoreConfig{
+		AgentsDir: agentsDir,
+		Log:       s.log,
+		Sink:      s.sink,
+	})
 	return s
 }
 
@@ -1238,7 +1243,7 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("sessions dir: %w", err)
 	}
 
-	cfg := loadAgentConfig(s.agentsDir, agentName)
+	cfg := store.LoadAgentConfig(s.agentsDir, agentName)
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),
@@ -1322,40 +1327,6 @@ func (s *Server) killSession(id string) {
 		sess.core.Close()
 		s.log.Info("killed session %s", id)
 	}
-}
-
-// formatEvent converts an agent Event to bytes for appending to the chat log.
-// Output matches ollie-tui's MakeOutputFn so the chat file looks identical to
-// what appears in the TUI chat pane.
-func formatEvent(ev agent.Event) []byte {
-	switch ev.Role {
-	case "user":
-		return []byte("user: " + ev.Content + "\n")
-	case "assistant":
-		return []byte(ev.Content)
-	case "call":
-		args := squashWhitespace(ev.Content)
-		if len(args) > 500 {
-			args = args[:500] + "..."
-		}
-		return []byte("-> " + ev.Name + "(" + args + ")\n")
-	case "tool":
-		return []byte(strings.TrimRight(ev.Content, "\n") + "\n")
-	case "retry":
-		return []byte("retrying in " + ev.Content + "s...\n")
-	case "error":
-		return []byte("error: " + ev.Content + "\n")
-	case "stalled":
-		return []byte("agent stalled\n")
-	case "info":
-		return []byte(ev.Content)
-	default:
-		return nil
-	}
-}
-
-func squashWhitespace(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }
 
 // readDir serializes directory entries for the given path, respecting offset and count.
@@ -1635,10 +1606,9 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		if len(parts) == 3 && parts[0] == "b" {
 			if js, ok := s.batchStore.JobStore(parts[1]); ok {
 				if base == "log" {
-					js.job.mu.RLock()
-					dir.Length = uint64(len(js.job.log))
-					dir.Qid.Vers = js.job.logVers
-					js.job.mu.RUnlock()
+					length, vers := js.LogInfo()
+					dir.Length = uint64(length)
+					dir.Qid.Vers = vers
 				}
 			}
 		}

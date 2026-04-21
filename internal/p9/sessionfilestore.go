@@ -10,6 +10,7 @@ import (
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
 	olog "ollie/pkg/log"
+	"ollie/pkg/store"
 )
 
 // sessionFileList defines the fixed set of files in a session directory,
@@ -332,7 +333,7 @@ func (s *SessionFileStore) makePublish() func(agent.Event) {
 				assistantStarted = true
 			}
 		}
-		s.sess.appendChat(formatEvent(ev))
+		s.sess.appendChat(store.FormatEvent(ev))
 		if ev.Role == "user" {
 			s.sess.mu.Lock()
 			s.sess.chatOffset = len(s.sess.chatLog)

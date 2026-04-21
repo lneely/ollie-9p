@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	"ollie/pkg/config"
 	"ollie/pkg/paths"
 	"ollie/pkg/store"
 	"ollie/pkg/tools/execute"
@@ -20,6 +19,8 @@ type (
 	Store          = store.Store
 	FlatDirStore   = store.FlatDir
 	SkillStore     = store.SkillStore
+	BatchStore     = store.BatchStore
+	BatchJobStore  = store.BatchJobStore
 
 	syntheticFileInfo = store.SyntheticFileInfo
 )
@@ -38,21 +39,6 @@ func syntheticEntry(name string, mode os.FileMode) os.DirEntry {
 
 func syntheticDirEntry(name string, mode os.FileMode) os.DirEntry {
 	return store.DirEntry(name, mode)
-}
-
-// --- config ---
-
-// loadAgentConfig resolves and loads the config for a named agent.
-// Returns nil (not an error) if the config file does not exist;
-// BuildAgentEnv handles nil configs.
-func loadAgentConfig(agentsDir, name string) *config.Config {
-	f, err := os.Open(agentsDir + "/" + name + ".json")
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	cfg, _ := config.Load(f)
-	return cfg
 }
 
 // --- util ---
