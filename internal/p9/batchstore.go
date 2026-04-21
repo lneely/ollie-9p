@@ -10,7 +10,6 @@ import (
 
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
-	"ollie/pkg/config"
 	"ollie/pkg/tools"
 	"ollie/pkg/tools/execute"
 )
@@ -282,8 +281,7 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 		be.SetModel(modelName)
 	}
 
-	cfgPath := agent.AgentConfigPath(s.srv.agentsDir, agentName)
-	cfg, _ := config.Load(cfgPath)
+	cfg := loadAgentConfig(s.srv.agentsDir, agentName)
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),

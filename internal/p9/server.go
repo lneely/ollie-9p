@@ -46,7 +46,6 @@ import (
 
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
-	"ollie/pkg/config"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
@@ -1236,8 +1235,7 @@ func (s *Server) createSession(args []string) error {
 		return fmt.Errorf("sessions dir: %w", err)
 	}
 
-	cfgPath := agent.AgentConfigPath(s.agentsDir, agentName)
-	cfg, _ := config.Load(cfgPath) // nil cfg is handled by BuildAgentEnv
+	cfg := loadAgentConfig(s.agentsDir, agentName)
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),
