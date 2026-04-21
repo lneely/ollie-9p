@@ -249,6 +249,10 @@ func New(sink *olog.Sink) *Server {
 		SessionsDir: sessionsDir,
 		Log:         s.log,
 		Sink:        s.sink,
+		SaveTranscript: func(data []byte) error {
+			name := time.Now().Format("20060102T150405") + "-chat.md"
+			return s.transcriptStore.Put(name, data)
+		},
 		OnRename: func(oldID, newID string) {
 			oldPrefix := "/s/" + oldID
 			newPrefix := "/s/" + newID
@@ -299,20 +303,7 @@ func defaultTmpDir() string {
 
 // sessionFileStore returns a SessionFileStore for the given session ID.
 func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
-	sess := s.sessionStore.Session(sessID)
-	if sess == nil {
-		return nil, false
-	}
-	return store.NewSessionFileStore(
-		sess,
-		s.log,
-		func() { s.sessionStore.KillSession(sessID) },
-		func(newID string) error { return s.sessionStore.Rename(sessID, newID) },
-		func(data []byte) error {
-			name := time.Now().Format("20060102T150405") + "-chat.md"
-			return s.transcriptStore.Put(name, data)
-		},
-	), true
+	return s.sessionStore.SessionFileStore(sessID)
 }
 
 // Serve handles a single 9P connection. Each request is dispatched to its own
