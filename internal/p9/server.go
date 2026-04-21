@@ -49,8 +49,6 @@ import (
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/store"
-	"ollie/pkg/tools"
-	"ollie/pkg/tools/execute"
 
 	"9fans.net/go/plan9"
 )
@@ -59,31 +57,6 @@ const (
 	QTDir  = plan9.QTDIR
 	QTFile = plan9.QTFILE
 )
-
-// session holds all state for one ollie agent session.
-type session struct {
-	mu     sync.RWMutex
-	id     string
-	core   agent.Core
-	ctx    context.Context
-	cancel context.CancelFunc
-	// chatLog is an append-only record of the conversation. Reads are served
-	// directly from this buffer by offset, so tail -f works via polling.
-	chatLog    []byte
-	chatVers   uint32 // incremented on each append; used as Qid.Vers
-	chatOffset int    // byte position of chat EOF immediately before last prompt submit
-}
-
-// appendChat appends data to the session's chat log and bumps the Qid version.
-func (sess *session) appendChat(data []byte) {
-	if len(data) == 0 {
-		return
-	}
-	sess.mu.Lock()
-	sess.chatLog = append(sess.chatLog, data...)
-	sess.chatVers++
-	sess.mu.Unlock()
-}
 
 // fid tracks per-descriptor state for a single 9P connection.
 type fid struct {
@@ -106,12 +79,10 @@ type connState struct {
 // Server is the 9P server for ollie sessions.
 type Server struct {
 	mu              sync.RWMutex
-	sessions        map[string]*session
 	conns           []*connState
 	log             *olog.Logger
 	sink            *olog.Sink
 	agentsDir       string // kept for session creation wiring
-	sessionsDir     string
 	agentStore      Store
 	promptStore     ReadableStore
 	memStore        Store
@@ -119,7 +90,7 @@ type Server struct {
 	utilStore       Store
 	pluginStore     Store
 	skillStore      Store
-	sessionStore    Store
+	sessionStore    *SessionStore
 	batchStore      *BatchStore
 	transcriptStore Store
 	tmpStore        Store
@@ -134,12 +105,11 @@ func New(sink *olog.Sink) *Server {
 	tmpDir := defaultTmpDir()
 	os.MkdirAll(tmpDir, 0755) //nolint:errcheck
 	agentsDir := paths.CfgDir() + "/agents"
+	sessionsDir := paths.CfgDir() + "/sessions"
 	s := &Server{
-		sessions:        make(map[string]*session),
 		log:             sink.Logger("9p", olog.LevelDebug),
 		sink:            sink,
 		agentsDir:       agentsDir,
-		sessionsDir:     paths.CfgDir() + "/sessions",
 		agentStore:      NewFlatDirStore(agentsDir, 0644),
 		promptStore:     NewFlatDirStore(agent.DefaultPromptsDir(), 0444),
 		memStore:        NewFlatDirStore(memDir, 0644),
@@ -150,7 +120,26 @@ func New(sink *olog.Sink) *Server {
 		transcriptStore: NewFlatDirStore(transcriptDir, 0444),
 		tmpStore:        NewFlatDirStore(tmpDir, 0600),
 	}
-	s.sessionStore = &SessionStore{srv: s}
+	s.sessionStore = store.NewSessionStore(store.SessionStoreConfig{
+		AgentsDir:   agentsDir,
+		SessionsDir: sessionsDir,
+		Log:         s.log,
+		Sink:        s.sink,
+		OnRename: func(oldID, newID string) {
+			oldPrefix := "/s/" + oldID
+			newPrefix := "/s/" + newID
+			for _, c := range s.conns {
+				c.mu.Lock()
+				for _, f := range c.fids {
+					if f.path == oldPrefix || strings.HasPrefix(f.path, oldPrefix+"/") {
+						f.path = newPrefix + f.path[len(oldPrefix):]
+						f.qid.Path = qidPath(f.path)
+					}
+				}
+				c.mu.Unlock()
+			}
+		},
+	})
 	s.batchStore = store.NewBatchStore(store.BatchStoreConfig{
 		AgentsDir: agentsDir,
 		Log:       s.log,
@@ -186,17 +175,15 @@ func defaultTmpDir() string {
 
 // sessionFileStore returns a SessionFileStore for the given session ID.
 func (s *Server) sessionFileStore(sessID string) (*SessionFileStore, bool) {
-	s.mu.RLock()
-	sess, ok := s.sessions[sessID]
-	s.mu.RUnlock()
-	if !ok {
+	sess := s.sessionStore.Session(sessID)
+	if sess == nil {
 		return nil, false
 	}
-	return NewSessionFileStore(
+	return store.NewSessionFileStore(
 		sess,
 		s.log,
-		func() { s.killSession(sessID) },
-		func(newID string) error { return s.renameSession(sessID, newID) },
+		func() { s.sessionStore.KillSession(sessID) },
+		func(newID string) error { return s.sessionStore.Rename(sessID, newID) },
 		func(data []byte) error {
 			name := time.Now().Format("20060102T150405") + "-chat.md"
 			return s.transcriptStore.Put(name, data)
@@ -321,7 +308,7 @@ func isSessionStoreFile(path string) bool {
 	if !ok || strings.Contains(name, "/") {
 		return false
 	}
-	_, ok = sessionStoreFiles[name]
+	_, ok = store.SessionStoreFileMode(name)
 	return ok
 }
 
@@ -975,51 +962,6 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	return &plan9.Fcall{Type: plan9.Rwstat, Tag: fc.Tag}
 }
 
-// renameSession re-keys a session in the sessions map, updates the core's
-// session ID, and rewrites fid paths across all connections.
-// Caller must hold NO locks on s.mu (this method acquires it).
-func (s *Server) renameSession(oldID, newID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sess, ok := s.sessions[oldID]
-	if !ok {
-		return fmt.Errorf("session not found: %s", oldID)
-	}
-	if _, exists := s.sessions[newID]; exists {
-		return fmt.Errorf("session already exists: %s", newID)
-	}
-	if sess.core.IsRunning() {
-		return fmt.Errorf("cannot rename while agent is running")
-	}
-
-	if err := sess.core.SetSessionID(newID); err != nil {
-		return err
-	}
-
-	sess.id = newID
-	s.sessions[newID] = sess
-	delete(s.sessions, oldID)
-
-	// Rewrite fid paths across all connections.
-	oldPrefix := "/s/" + oldID
-	newPrefix := "/s/" + newID
-	for _, c := range s.conns {
-		c.mu.Lock()
-		for _, f := range c.fids {
-			if f.path == oldPrefix || strings.HasPrefix(f.path, oldPrefix+"/") {
-				f.path = newPrefix + f.path[len(oldPrefix):]
-				f.qid.Path = qidPath(f.path)
-			}
-		}
-		c.mu.Unlock()
-	}
-
-	sess.appendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
-	s.log.Info("renamed session %s -> %s", oldID, newID)
-	return nil
-}
-
 func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	cs.mu.Lock()
 	f, ok := cs.fids[fc.Fid]
@@ -1175,158 +1117,15 @@ func (s *Server) handleWrite(path, input string) error {
 }
 
 // handleNewSession parses KV pairs (one per line or space-separated) and creates a session.
-func (s *Server) handleNewSession(input string) error {
-	s.log.Debug("handleNewSession input=%q", input)
-	// Accept both newline-separated and space-separated KV pairs.
-	args := strings.Fields(input)
-	return s.createSession(args)
-}
-
-// createSession parses key=value options and starts a new agent session.
-// Recognised keys: name, backend, model, agent, cwd. cwd is required.
-// Example: new cwd=/home/lkn/src/myproject backend=ollama model=qwen3:8b agent=myagent
-func (s *Server) createSession(args []string) error {
-	name := ""
-	backendOverride := ""
-	modelOverride := ""
-	agentName := "default"
-	cwd := ""
-	for _, arg := range args {
-		k, v, ok := strings.Cut(arg, "=")
-		if !ok {
-			return fmt.Errorf("invalid option %q (expected key=value)", arg)
-		}
-		if v == "" {
-			continue
-		}
-		switch k {
-		case "name":
-			name = v
-		case "backend":
-			backendOverride = v
-		case "model":
-			modelOverride = v
-		case "agent":
-			agentName = v
-		case "cwd":
-			cwd = v
-		default:
-			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
-		}
-	}
-
-	if cwd == "" {
-		return fmt.Errorf("cwd is required (e.g. new cwd=/path/to/project)")
-	}
-
-	var (
-		be  backend.Backend
-		err error
-	)
-	if backendOverride != "" {
-		old := os.Getenv("OLLIE_BACKEND")
-		os.Setenv("OLLIE_BACKEND", backendOverride) //nolint:errcheck
-		be, err = backend.New()
-		os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
-	} else {
-		be, err = backend.New()
-	}
-	if err != nil {
-		return fmt.Errorf("backend: %w", err)
-	}
-
-	if modelOverride != "" {
-		be.SetModel(modelOverride)
-	}
-
-	if err := os.MkdirAll(s.sessionsDir, 0700); err != nil {
-		return fmt.Errorf("sessions dir: %w", err)
-	}
-
-	cfg := store.LoadAgentConfig(s.agentsDir, agentName)
-
-	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(cwd),
-	})
-
-	sessID := name
-	if sessID == "" {
-		sessID = agent.NewSessionID()
-	}
-
-	s.mu.RLock()
-	_, exists := s.sessions[sessID]
-	s.mu.RUnlock()
-	if exists {
-		return fmt.Errorf("session already exists: %s", sessID)
-	}
-
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	core := agent.NewAgentCore(agent.AgentCoreConfig{
-		Backend:       be,
-		AgentName:     agentName,
-		AgentsDir:     s.agentsDir,
-		SessionsDir:   s.sessionsDir,
-		SessionID:     sessID,
-		CWD:           cwd,
-		Env:           env,
-		NewDispatcher: newDisp,
-		Log:           s.sink.NewLogger("core"),
-	})
-	sess := &session{
-		id:     sessID,
-		core:   core,
-		ctx:    ctx,
-		cancel: cancel,
-	}
-
-	s.mu.Lock()
-	s.sessions[sessID] = sess
-	s.mu.Unlock()
-
-	s.log.Info("new session %s (backend=%s model=%s agent=%s)",
-		sessID, core.BackendName(), core.ModelName(), core.AgentName())
-	return nil
-}
-
-// Shutdown kills all active sessions and batch jobs, triggering Close() on each core.
-// InterruptAll cancels any in-progress agent turn on every active session.
-// Call this on SIGINT or SIGTERM before Shutdown to allow turns to unwind
-// cleanly rather than having their context cancelled mid-tool-call.
-func (s *Server) InterruptAll() {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, sess := range s.sessions {
-		sess.core.Interrupt(agent.ErrInterrupted)
-	}
-}
-
+// Shutdown kills all active sessions and batch jobs.
 func (s *Server) Shutdown() {
-	s.mu.Lock()
-	ids := make([]string, 0, len(s.sessions))
-	for id := range s.sessions {
-		ids = append(ids, id)
-	}
-	s.mu.Unlock()
-	for _, id := range ids {
-		s.killSession(id)
-	}
-
+	s.sessionStore.Shutdown()
 	s.batchStore.Shutdown()
 }
 
-func (s *Server) killSession(id string) {
-	s.mu.Lock()
-	sess := s.sessions[id]
-	delete(s.sessions, id)
-	s.mu.Unlock()
-	if sess != nil {
-		sess.cancel()
-		sess.core.Close()
-		s.log.Info("killed session %s", id)
-	}
+// InterruptAll cancels any in-progress agent turn on every active session.
+func (s *Server) InterruptAll() {
+	s.sessionStore.InterruptAll()
 }
 
 // readDir serializes directory entries for the given path, respecting offset and count.
@@ -1545,7 +1344,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			if path == "/backends" || path == "/help" {
 				mode = 0444
 			} else if isSessionStoreFile(path) {
-				mode = plan9.Perm(sessionStoreFiles[base])
+				mode_, _ := store.SessionStoreFileMode(base)
+				mode = plan9.Perm(mode_)
 			} else if strings.HasPrefix(path, "/a/") {
 				mode = 0666
 			} else if strings.HasPrefix(path, "/p/") {
@@ -1587,15 +1387,11 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	if strings.HasPrefix(path, "/s/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) == 3 && parts[0] == "s" {
-			s.mu.RLock()
-			sess := s.sessions[parts[1]]
-			s.mu.RUnlock()
-			if sess != nil {
+			if sess := s.sessionStore.Session(parts[1]); sess != nil {
 				if base == "chat" {
-					sess.mu.RLock()
-					dir.Length = uint64(len(sess.chatLog))
-					dir.Qid.Vers = sess.chatVers
-					sess.mu.RUnlock()
+					length, vers := sess.ChatInfo()
+					dir.Length = uint64(length)
+					dir.Qid.Vers = vers
 				}
 			}
 		}

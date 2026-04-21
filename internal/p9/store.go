@@ -21,6 +21,9 @@ type (
 	SkillStore     = store.SkillStore
 	BatchStore     = store.BatchStore
 	BatchJobStore  = store.BatchJobStore
+	Session        = store.Session
+	SessionStore   = store.SessionStore
+	SessionFileStore = store.SessionFileStore
 
 	syntheticFileInfo = store.SyntheticFileInfo
 )
