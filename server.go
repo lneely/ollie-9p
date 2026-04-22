@@ -1633,6 +1633,15 @@ func (s *Server) makeStat(path string) plan9.Dir {
 					}
 				}
 			}
+		case strings.HasPrefix(path, "/s/"):
+			parts := strings.SplitN(strings.TrimPrefix(path, "/s/"), "/", 2)
+			if len(parts) == 2 {
+				if sfs, ok := s.sessionFileStore(parts[0]); ok {
+					if info, err := sfs.Stat(parts[1]); err == nil {
+						dir.Length = uint64(info.Size())
+					}
+				}
+			}
 		}
 	}
 
