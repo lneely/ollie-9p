@@ -1487,6 +1487,8 @@ func (s *Server) makeStat(path string) plan9.Dir {
 			mode = 0444
 		case "backend", "agent", "model", "cwd":
 			mode = 0666
+		case "tail":
+			mode = 0555
 		default:
 			if path == "/backends" || path == "/help" {
 				mode = 0444
