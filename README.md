@@ -27,27 +27,17 @@ ollie/
   creation and is not served via p/. The assembled system prompt is visible at
   s/<id>/systemprompt.
 
-  b/                    dir:   batch jobs and job scripts
-    new                 r/w:   read: KV template; write: submit a job spec
-    idx                 read:  job index (id, state, cwd, agent — one per line)
-    job                 exec:  core batch job runner (submit, wait, print result)
-    q                   exec:  foreground one-shot query; thin wrapper around job
-    sched               exec:  submit background job; prints b/ path; wrapper around job
-    cleanup             exec:  remove all jobs with state "done"
-    <job-id>/                  rm -r to cancel and remove
-      spec              read:  original job spec as submitted
-      state             read:  running | done | failed: <reason>
-      statewait         read:  blocks until state changes; returns new state
-      result            read:  assistant reply (populated when done)
-      usage             read:  token counts
-      ctxsz             read:  context size
-  s/                    dir:   sessions and session management scripts
+  s/                    dir:   sessions, session management scripts, and batch job scripts
     new                 r/w:   read: KV template; write: create session
     idx                 read:  session index (id, state, cwd, backend, model — one per line)
     sh                  exec:  interactive chat shell
     ls                  exec:  list active sessions
     kill                exec:  kill a session by ID
-    <session-id>/               rm -r to kill session; mv to rename
+    job                 exec:  core batch job runner (submit, wait, print result)
+    q                   exec:  foreground one-shot query; thin wrapper around job
+    sched               exec:  submit background job; prints s/ path; wrapper around job
+    cleanup             exec:  remove all sessions with state "done"
+    <session-id>/              rm -r to kill session; mv to rename
       agent             r/w:   active agent name
       backend           r/w:   active backend name
       chat              read:  cumulative conversation history
@@ -69,9 +59,14 @@ ollie/
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
+    idx                 read:  tool index (name, description, args — synthesized at read time)
     <script>            r/w:   tool script content
+  tr/                   dir:   saved transcripts (read, backed by OLLIE_TRANSCRIPT_PATH or ~/.config/ollie/transcript/)
+    <timestamp>-chat.md read:  transcript saved at session end
+  tmp/                  dir:   temporary files (r/w, backed by OLLIE_TMP_PATH or $XDG_DATA_HOME/ollie/tmp/)
+    <file>              r/w:   scratch files; supports create, read, write, rm
   u/                    dir:   utility scripts (read, backed by ~/.config/ollie/scripts/u/)
-    <script>            exec:  utility script; compositions of b/ primitives
+    <script>            exec:  utility script; compositions of s/ primitives
   x/                    dir:   system exec and plugins (read, backed by ~/.config/ollie/scripts/x/)
     <plugin>            exec:  server-invoked plugin (e.g. elevation backends)
 ```
@@ -85,11 +80,12 @@ Each 9P directory endpoint is backed by a named store implementing the `Store` i
 | Path  | Default backing        | Interface       |
 |-------|------------------------|-----------------|
 | `/a`  | `FlatDirStore`         | `Store`         |
-| `/b`  | `BatchStore`           | `Store`         |
 | `/m`  | `FlatDirStore`         | `Store`         |
 | `/p`  | `FlatDirStore`         | `Store`         |
 | `/sk` | `SkillStore`           | `Store`         |
 | `/t`  | `ToolStore`            | `Store`         |
+| `/tr` | `FlatDirStore`         | `Store`         |
+| `/tmp`| `FlatDirStore`         | `Store`         |
 | `/u`  | `UtilStore`            | `Store`         |
 | `/x`  | `ExecStore`            | `Store`         |
 | `/s`  | `SessionStore`         | `Store`         |
@@ -109,13 +105,16 @@ Installs `olliesrv` to `$HOME/bin`.
 ## Usage
 
 ```sh
-olliesrv start       # start daemon (backgrounds itself)
-olliesrv fgstart     # start in foreground
-olliesrv stop        # stop daemon
-olliesrv status      # check if running
+olliesrv start             # start daemon (backgrounds itself)
+olliesrv fgstart           # start in foreground
+olliesrv stop              # stop daemon
+olliesrv status            # check if running
+olliesrv mount <addr> [mnt]  # mount a remote 9P server via 9pfuse
 ```
 
 The server listens on a Unix socket in the Plan 9 namespace (`$NAMESPACE/ollie`) and optionally mounts via `9pfuse` to `$HOME/mnt/ollie` (or `$OLLIE`).
+
+`olliesrv mount` is for remote instances: it calls `9pfuse <addr> <mnt>` and defaults the mountpoint to `$HOME/mnt/<addr>`.
 
 ## Sessions
 
