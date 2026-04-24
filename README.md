@@ -28,16 +28,22 @@ ollie/
   s/<id>/systemprompt.
 
   s/                    dir:   sessions, session management scripts, and batch job scripts
-    new                 r/w:   read: KV template; write: create session
-    idx                 read:  session index (id, state, cwd, backend, model — one per line)
+    new                 r/w:   read: KV template; write: create session or batch job (see below)
+    idx                 read:  index of all sessions and batch jobs (id, state, cwd, backend/agent — one per line)
     sh                  exec:  interactive chat shell
     ls                  exec:  list active sessions
     kill                exec:  kill a session by ID
     job                 exec:  core batch job runner (submit, wait, print result)
     q                   exec:  foreground one-shot query; thin wrapper around job
     sched               exec:  submit background job; prints s/ path; wrapper around job
-    cleanup             exec:  remove all sessions with state "done"
-    <session-id>/              rm -r to kill session; mv to rename
+    cleanup             exec:  remove all batch jobs with state "done"
+
+  Writing to s/new creates either an interactive session or a batch job depending on format:
+    key=value pairs only (no --- separator) => interactive session
+    key=value pairs + \n---\n + prompt body  => batch job (one-and-done lifecycle)
+
+  Interactive session directories (multi-turn, idle<=>running):
+    <session-id>/              rm -r to kill; mv to rename
       agent             r/w:   active agent name
       backend           r/w:   active backend name
       chat              read:  cumulative conversation history
@@ -50,12 +56,23 @@ ollie/
       fifo.out          read:  pop the next queued prompt
       model             r/w:   active model name
       models            read:  available models from the backend
+      params            r/w:   generation parameters (maxTokens, temperature, etc.)
       prompt            write: submit a prompt to the agent
       state             read:  current agent state (idle, thinking, calling: <tool>)
       statewait         read:  blocks until state changes; returns new value
       systemprompt      read:  fully rendered system prompt for this session
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
       usagewait         read:  blocks until usage changes; returns new value
+
+  Batch job directories (one-and-done: running => done | failed):
+    <job-id>/                  rm -r to cancel and remove
+      spec              read:  verbatim spec as submitted to s/new
+      state             read:  running | done | failed: <reason>
+      statewait         read:  blocks until terminal state; returns final state
+      result            read:  assistant reply (populated when done)
+      usage             read:  token counts
+      ctxsz             read:  context size
+      log               read:  raw event log (tool calls, assistant output)
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
