@@ -44,25 +44,24 @@ ollie/
 
   Interactive session directories (multi-turn, idle<=>running):
     <session-id>/              rm -r to kill; mv to rename
-      agent             r/w:   active agent name
-      backend           r/w:   active backend name
+      spec              r/w:   KV snapshot of config and current state; write partial KV to mutate
+                               read fields: state, backend, model, agent, cwd, usage, ctxsz, offset,
+                                            maxTokens, temperature, frequencyPenalty, presencePenalty
+                               writable fields: backend, model, agent, cwd, maxTokens, temperature,
+                                                frequencyPenalty, presencePenalty
+                               (state, usage, ctxsz, offset are read-only; silently ignored on write)
       chat              read:  cumulative conversation history
       ctl               write: stop | <command>
-      ctxsz             read:  estimated context size vs context window
-      ctxszwait         read:  blocks until ctxsz changes; returns new value
-      cwd               r/w:   working directory for tool execution
-      cwdwait           read:  blocks until cwd changes; returns new value
       fifo.in           write: queue a prompt for later execution
       fifo.out          read:  pop the next queued prompt
-      model             r/w:   active model name
-      models            read:  available models from the backend
-      params            r/w:   generation parameters (maxTokens, temperature, etc.)
+      offset            read:  byte offset in chat immediately after the last user prompt
       prompt            write: submit a prompt to the agent
-      state             read:  current agent state (idle, thinking, calling: <tool>)
-      statewait         read:  blocks until state changes; returns new value
-      systemprompt      read:  fully rendered system prompt for this session
+      statewait         read:  blocks until state changes; returns new state
       usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
-      usagewait         read:  blocks until usage changes; returns new value
+      ctxsz             read:  estimated context size vs context window
+      models            read:  available models from the backend
+      systemprompt      read:  fully rendered system prompt for this session
+      tail              exec:  exec tail -f chat
 
   Batch job directories (one-and-done: running => done | failed):
     <job-id>/                  rm -r to cancel and remove
