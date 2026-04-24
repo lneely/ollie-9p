@@ -27,29 +27,25 @@ ollie/
   creation and is not served via p/. The assembled system prompt is visible at
   s/<id>/systemprompt.
 
-  s/                    dir:   sessions, session management scripts, and batch job scripts
-    new                 r/w:   read: KV template; write: create session or batch job (see below)
-    idx                 read:  index of all sessions and batch jobs (id, state, cwd, backend/agent — one per line)
+  s/                    dir:   sessions and session management scripts
+    new                 r/w:   read: KV template; write: create session
+    idx                 read:  index of all sessions (id, state, cwd, backend, model — one per line)
     sh                  exec:  interactive chat shell
     ls                  exec:  list active sessions
     kill                exec:  kill a session by ID
-    job                 exec:  core batch job runner (submit, wait, print result)
-    q                   exec:  foreground one-shot query; thin wrapper around job
-    sched               exec:  submit background job; prints s/ path; wrapper around job
-    cleanup             exec:  remove all batch jobs with state "done"
+    b                   exec:  one-shot query: create session, submit prompt, wait, print result, kill
+    bfg                 exec:  batch foreground: submit prompt, wait, print result
+    bbg                 exec:  batch background: submit prompt, print session path, return immediately
+    cleanup             exec:  kill all idle sessions
 
-  Writing to s/new creates either an interactive session or a batch job depending on format:
-    key=value pairs only (no --- separator) => interactive session
-    key=value pairs + \n---\n + prompt body  => batch job (one-and-done lifecycle)
-
-  Interactive session directories (multi-turn, idle<=>running):
+  Session directories (multi-turn, idle<=>running):
     <session-id>/              rm -r to kill; mv to rename
-      spec              r/w:   KV snapshot of config and current state; write partial KV to mutate
-                               read fields: state, backend, model, agent, cwd, usage, ctxsz, offset,
+      cfg               r/w:   KV snapshot of config and current state; write partial KV to mutate
+                               read fields: state, backend, model, agent, cwd,
                                             maxTokens, temperature, frequencyPenalty, presencePenalty
                                writable fields: backend, model, agent, cwd, maxTokens, temperature,
                                                 frequencyPenalty, presencePenalty
-                               (state, usage, ctxsz, offset are read-only; silently ignored on write)
+                               (state is read-only; silently ignored on write)
       chat              read:  cumulative conversation history
       ctl               write: stop | <command>
       fifo.in           write: queue a prompt for later execution
@@ -62,16 +58,6 @@ ollie/
       models            read:  available models from the backend
       systemprompt      read:  fully rendered system prompt for this session
       tail              exec:  exec tail -f chat
-
-  Batch job directories (one-and-done: running => done | failed):
-    <job-id>/                  rm -r to cancel and remove
-      spec              read:  verbatim spec as submitted to s/new
-      state             read:  running | done | failed: <reason>
-      statewait         read:  blocks until terminal state; returns final state
-      result            read:  assistant reply (populated when done)
-      usage             read:  token counts
-      ctxsz             read:  context size
-      log               read:  raw event log (tool calls, assistant output)
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
