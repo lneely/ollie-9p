@@ -1032,16 +1032,18 @@ func (s *Server) clunk(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	f, ok := cs.fids[fc.Fid]
 	var path string
 	var data []byte
+	var writable bool
 	if ok {
-		if len(f.writeBuf) > 0 {
+		if m := f.mode & 3; m == plan9.OWRITE || m == plan9.ORDWR {
 			path = f.path
+			writable = true
 			data = make([]byte, len(f.writeBuf))
 			copy(data, f.writeBuf)
 		}
 		delete(cs.fids, fc.Fid)
 	}
 	cs.mu.Unlock()
-	if len(data) > 0 {
+	if writable {
 		s.log.Debug("Tclunk flush path=%q writeBuf=%d", path, len(data))
 		input := strings.TrimSpace(string(data))
 		if s.isAsyncWrite(path) {
@@ -1120,11 +1122,11 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 // as a goroutine because they block for the entire agent turn).
 func (s *Server) handleWrite(path, input string) error {
 	s.log.Debug("handleWrite path=%q input_len=%d", path, len(input))
-	if input == "" {
-		return nil
-	}
 
 	if path == "/s/new" {
+		if input == "" {
+			return nil
+		}
 		return storeWrite(s.sessionStore, "new", []byte(input))
 	}
 
