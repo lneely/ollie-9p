@@ -1391,7 +1391,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 		switch base {
 		case "ctl", "prompt", "fifo.in":
 			mode = 0200
-		case "chat", "usage", "ctxsz", "models", "fifo.out", "offset", "statewait", "systemprompt":
+		case "chat", "usage", "cost", "ctxsz", "models", "fifo.out", "offset", "statewait", "systemprompt":
 			mode = 0444
 		case "cfg":
 			mode = 0666
