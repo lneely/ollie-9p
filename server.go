@@ -322,6 +322,33 @@ func storeWrite(s store.Store, name string, data []byte) error {
 	return e.Write(data)
 }
 
+// readTimeout is the server-side deadline for all non-blocking store reads.
+const readTimeout = 10 * time.Second
+
+// storeReadCtx is like storeRead but aborts if the context is cancelled or
+// the read takes longer than readTimeout.
+func storeReadCtx(ctx context.Context, s store.Store, name string) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		data, err := storeRead(s, name)
+		ch <- result{data, err}
+	}()
+	timer := time.NewTimer(readTimeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.data, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, fmt.Errorf("read timeout")
+	}
+}
+
 // storeBlockingRead opens an entry and performs a blocking read.
 func storeBlockingRead(s store.Store, name string, ctx context.Context, base string) ([]byte, error) {
 	e, err := s.Open(name)
@@ -721,7 +748,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Fixed files directly under /s/ are served from the session store.
 	if isSessionStoreFile(path) {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.sessionStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.sessionStore, pathBase(path))
 		if err != nil {
 			s.log.Debug("Rread path=%q err=%v", path, err)
 			return errFcall(fc, err.Error())
@@ -750,7 +777,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Agent config files are served from the agent store.
 	if strings.HasPrefix(path, "/a/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.agentStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.agentStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -760,7 +787,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Prompt files are served from the prompt store.
 	if strings.HasPrefix(path, "/p/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.promptStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.promptStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -770,7 +797,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Memory files are served from the memory store.
 	if strings.HasPrefix(path, "/m/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.memStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.memStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -781,7 +808,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Skill files are served from the skill store.
 	if strings.HasPrefix(path, "/sk/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.skillStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.skillStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -791,7 +818,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.toolStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.toolStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -801,7 +828,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Util files are served from the util store.
 	if strings.HasPrefix(path, "/u/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.utilStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.utilStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -811,7 +838,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Plugin files are served from the plugin store.
 	if strings.HasPrefix(path, "/x/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.pluginStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.pluginStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -821,7 +848,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Tmp files are served from the tmp store.
 	if strings.HasPrefix(path, "/tmp/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.tmpStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.tmpStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -831,7 +858,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Transcript files are served from the transcript store.
 	if strings.HasPrefix(path, "/tr/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeRead(s.transcriptStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.transcriptStore, pathBase(path))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -885,7 +912,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 				}
 				return s.readSlice(fc, content)
 			}
-			content, err := storeRead(sfs, parts[2])
+			content, err := storeReadCtx(ctx, sfs, parts[2])
 			if err != nil {
 				s.log.Debug("Rread session file err=%v", err)
 				return errFcall(fc, err.Error())
