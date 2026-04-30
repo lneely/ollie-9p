@@ -17,13 +17,13 @@ import (
 	"ollie/pkg/backend"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
-	"ollie/pkg/store"
 	"ollie/pkg/tools/execute"
+	"olliesrv/store"
 
 	"9fans.net/go/plan9"
 )
 
-// Re-export core store types so existing 9p code compiles unchanged.
+// Re-export store types for use in server.go.
 type (
 	StoreEntry    = store.StoreEntry
 	Store         = store.Store
