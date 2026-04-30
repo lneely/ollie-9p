@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -102,12 +103,20 @@ func (s *ExecStore) Open(name string) (StoreEntry, error) {
 // ToolStore is a BlobStore backed by the tools directory.
 // It extends FlatDirStore with a synthetic "idx" entry that lists all tools
 // with their descriptions and argument signatures.
+// It supports subdirectories (e.g. _lib/) for shared library code.
 type ToolStore struct {
 	FlatDirStore
+	dir string
 }
 
 func NewToolStore() *ToolStore {
-	return &ToolStore{FlatDirStore: NewFlatDirStore(execute.ToolsPath(), 0755)}
+	dir := execute.ToolsPath()
+	return &ToolStore{FlatDirStore: NewFlatDirStore(dir, 0755), dir: dir}
+}
+
+// ListDir lists entries in a subdirectory relative to the tools root.
+func (s *ToolStore) ListDir(rel string) ([]os.DirEntry, error) {
+	return os.ReadDir(filepath.Join(s.dir, rel))
 }
 
 func (s *ToolStore) Stat(name string) (os.FileInfo, error) {
@@ -210,7 +219,7 @@ type Server struct {
 	agentStore      Store
 	promptStore     Store
 	memStore        Store
-	toolStore       Store
+	toolStore       *ToolStore
 	utilStore       Store
 	pluginStore     Store
 	skillStore      Store
@@ -566,7 +575,17 @@ func (s *Server) pathType(path string) string {
 			return "file"
 		}
 	case len(parts) == 2 && parts[0] == "t":
-		if _, err := s.toolStore.Stat(parts[1]); err == nil {
+		if info, err := s.toolStore.Stat(parts[1]); err == nil {
+			if info.IsDir() {
+				return "dir"
+			}
+			return "file"
+		}
+	case len(parts) == 3 && parts[0] == "t":
+		if info, err := s.toolStore.Stat(parts[1] + "/" + parts[2]); err == nil {
+			if info.IsDir() {
+				return "dir"
+			}
 			return "file"
 		}
 	case len(parts) == 3 && parts[0] == "s":
@@ -603,6 +622,13 @@ func pathBase(path string) string {
 		return path
 	}
 	return path[i+1:]
+}
+
+func boolToDir(isDir bool) uint32 {
+	if isDir {
+		return uint32(plan9.DMDIR)
+	}
+	return 0
 }
 
 func (s *Server) attach(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
@@ -691,6 +717,24 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		return errFcall(fc, "bad fid")
 	}
 	if fc.Perm&plan9.DMDIR != 0 {
+		if f.path == "/t" || strings.HasPrefix(f.path, "/t/") {
+			rel := strings.TrimPrefix(f.path, "/t")
+			if rel == "" {
+				rel = fc.Name
+			} else {
+				rel = rel[1:] + "/" + fc.Name // strip leading /
+			}
+			dir := filepath.Join(s.toolStore.dir, rel)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return errFcall(fc, err.Error())
+			}
+			newPath := pathJoin(f.path, fc.Name)
+			qid := plan9.Qid{Type: QTDir, Path: qidPath(newPath)}
+			f.path = newPath
+			f.qid = qid
+			f.mode = fc.Mode
+			return &plan9.Fcall{Type: plan9.Rcreate, Tag: fc.Tag, Qid: qid}
+		}
 		return errFcall(fc, "mkdir not supported")
 	}
 
@@ -717,6 +761,13 @@ func (s *Server) create(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case "/sk":
 		if err := s.skillStore.Create(fc.Name); err != nil {
 			return errFcall(fc, err.Error())
+		}
+	default:
+		if strings.HasPrefix(f.path, "/t/") {
+			rel := strings.TrimPrefix(f.path, "/t/") + "/" + fc.Name
+			if err := s.toolStore.Create(rel); err != nil {
+				return errFcall(fc, err.Error())
+			}
 		}
 	}
 
@@ -818,7 +869,7 @@ func (s *Server) read(cs *connState, fc *plan9.Fcall, ctx context.Context) *plan
 	// Tool files are served from the tool store.
 	if strings.HasPrefix(path, "/t/") {
 		s.log.Debug("Tread path=%q offset=%d count=%d", path, fc.Offset, fc.Count)
-		content, err := storeReadCtx(ctx, s.toolStore, pathBase(path))
+		content, err := storeReadCtx(ctx, s.toolStore, strings.TrimPrefix(path, "/t/"))
 		if err != nil {
 			return errFcall(fc, err.Error())
 		}
@@ -1029,11 +1080,14 @@ func (s *Server) wstat(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 		cs.mu.Unlock()
 
 	case strings.HasPrefix(f.path, "/t/"):
-		if err := s.toolStore.Rename(oldName, newDir.Name); err != nil {
+		oldRel := strings.TrimPrefix(f.path, "/t/")
+		parentRel := oldRel[:len(oldRel)-len(oldName)]
+		newRel := parentRel + newDir.Name
+		if err := s.toolStore.Rename(oldRel, newRel); err != nil {
 			return errFcall(fc, err.Error())
 		}
 		cs.mu.Lock()
-		f.path = "/t/" + newDir.Name
+		f.path = "/t/" + newRel
 		f.qid.Path = qidPath(f.path)
 		cs.mu.Unlock()
 
@@ -1120,7 +1174,7 @@ func (s *Server) remove(cs *connState, fc *plan9.Fcall) *plan9.Fcall {
 	case strings.HasPrefix(path, "/sk/"):
 		err = s.skillStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/t/"):
-		err = s.toolStore.Delete(pathBase(path))
+		err = s.toolStore.Delete(strings.TrimPrefix(path, "/t/"))
 	case strings.HasPrefix(path, "/tmp/"):
 		err = s.tmpStore.Delete(pathBase(path))
 	case strings.HasPrefix(path, "/tr/"):
@@ -1174,7 +1228,7 @@ func (s *Server) handleWrite(path, input string) error {
 
 	// Tool file writes go to the tool store.
 	if strings.HasPrefix(path, "/t/") {
-		return storeWrite(s.toolStore, pathBase(path), []byte(input))
+		return storeWrite(s.toolStore, strings.TrimPrefix(path, "/t/"), []byte(input))
 	}
 
 	// Tmp file writes go to the tmp store.
@@ -1274,7 +1328,13 @@ func (s *Server) readDir(path string, offset uint64, count uint32) []byte {
 			if e.Name() == "idx" {
 				mode = 0444
 			}
-			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), false, mode))
+			dirs = append(dirs, makeDir(e.Name(), "/t/"+e.Name(), e.IsDir(), mode|plan9.Perm(boolToDir(e.IsDir()))))
+		}
+	} else if strings.HasPrefix(path, "/t/") {
+		rel := strings.TrimPrefix(path, "/t/")
+		entries, _ := s.toolStore.ListDir(rel)
+		for _, e := range entries {
+			dirs = append(dirs, makeDir(e.Name(), path+"/"+e.Name(), e.IsDir(), 0777|plan9.Perm(boolToDir(e.IsDir()))))
 		}
 	} else if path == "/tmp" {
 		entries, _ := s.tmpStore.List()
@@ -1380,7 +1440,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 	var mode plan9.Perm
 	if isDir {
 		qid.Type = QTDir
-		if path == "/t" {
+		if path == "/t" || strings.HasPrefix(path, "/t/") {
 			mode = plan9.DMDIR | 0777
 		} else if path == "/a" || path == "/m" || path == "/tmp" || path == "/u" {
 			mode = plan9.DMDIR | 0755
@@ -1488,7 +1548,7 @@ func (s *Server) makeStat(path string) plan9.Dir {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/t/"):
-			if content, err := storeRead(s.toolStore, base); err == nil {
+			if content, err := storeRead(s.toolStore, strings.TrimPrefix(path, "/t/")); err == nil {
 				dir.Length = uint64(len(content))
 			}
 		case strings.HasPrefix(path, "/u/"):

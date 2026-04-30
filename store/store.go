@@ -78,7 +78,6 @@ func (s *storeConfig) Rename(old, new string) error           { return s.RenameF
 // NewFlatDir returns a Store backed by a directory on the local filesystem.
 func NewFlatDir(dir string, perm os.FileMode) Store {
 	join := func(name string) string { return filepath.Join(dir, name) }
-	ensureDir := func() error { return os.MkdirAll(dir, 0755) }
 	notBlocking := func(context.Context, string) ([]byte, error) {
 		return nil, fmt.Errorf("blocking read not supported")
 	}
@@ -92,7 +91,7 @@ func NewFlatDir(dir string, perm os.FileMode) Store {
 				StatFn:         func() (os.FileInfo, error) { return os.Stat(path) },
 				ReadFn:         func() ([]byte, error) { return os.ReadFile(path) },
 				WriteFn: func(data []byte) error {
-					if err := ensureDir(); err != nil {
+					if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 						return err
 					}
 					return os.WriteFile(path, data, perm)
@@ -101,10 +100,11 @@ func NewFlatDir(dir string, perm os.FileMode) Store {
 			}, nil
 		},
 		CreateFn: func(name string) error {
-			if err := ensureDir(); err != nil {
+			path := join(name)
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 				return err
 			}
-			return os.WriteFile(join(name), nil, perm)
+			return os.WriteFile(path, nil, perm)
 		},
 		DeleteFn: func(name string) error { return os.Remove(join(name)) },
 		RenameFn: func(old, new string) error { return os.Rename(join(old), join(new)) },
