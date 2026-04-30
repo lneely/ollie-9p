@@ -47,17 +47,22 @@ ollie/
                                                 frequencyPenalty, presencePenalty
                                (state is read-only; silently ignored on write)
       chat              read:  cumulative conversation history
+      context           read:  full message history as JSONL (one message per line)
+      cost              read:  cumulative cost in USD (if reported by backend)
       ctl               write: stop | <command>
+      ctxsz             read:  estimated context size vs context window
+      env               read:  session environment variables (OLLIE_SESSION_ID, OLLIE_*)
       fifo.in           write: queue a prompt for later execution
       fifo.out          read:  pop the next queued prompt
-      offset            read:  byte offset in chat immediately after the last user prompt
-      prompt            write: submit a prompt to the agent
-      statewait         read:  blocks until state changes; returns new state
-      usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
-      ctxsz             read:  estimated context size vs context window
       models            read:  available models from the backend
+      offset            read:  byte offset in chat immediately after the last user prompt
+      plan              r/w:   scratch space for agent planning (persisted per session)
+      prompt            write: submit a prompt to the agent
+      prompt.prev       read:  the last submitted prompt
+      statewait         read:  blocks until state changes; returns new state
       systemprompt      read:  fully rendered system prompt for this session
       tail              exec:  exec tail -f chat
+      usage             read:  token counts (input, output, requests; [estimated] if not reported by backend)
   sk/                   dir:   skills (r/w, from OLLIE_SKILLS_PATH or ~/.config/ollie/skills/)
     <name>.md           r/w:   skill SKILL.md content
   t/                    dir:   tool scripts (r/w, backed by ~/.config/ollie/tools/)
@@ -163,7 +168,7 @@ echo "rn my-name" > $OLLIE/s/<session-id>/ctl
 echo "model qwen3:8b" > $OLLIE/s/<session-id>/ctl
 ```
 
-`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `context`, `usage`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
+`ctl` accepts only recognized commands: `stop`, `kill`, `rn <name>`, `save`, `compact`, `clear`, `backend`, `model`, `models`, `agents`, `agent`, `sessions`, `cwd`, `skills`, `tools`, `context`, `usage`, `cost`, `history`, `irw`, `help`. The `/` prefix is added automatically. Unrecognized input is rejected with an error.
 
 ### Switch backend, model, or agent
 
